@@ -65,8 +65,9 @@ async def get_project() -> List[Dict[str, Any]]:
     logger.info("开始获取当前用户的所有项目")
     try:
         data = await client.get_project()
+        print("===",data)
         projects: List[Dict[str, Any]] = []
-        for project in data:
+        for project in data["data"]:
             projects.append({
                 "projectId":project.get("projectId"),
                 "projectCode":project.get("projectCode"),
@@ -85,7 +86,7 @@ async def get_workitem_list(project_id: str, workitem_status: str, offset: int, 
     try:
         data = await client.query_workitem_list(project_id, workitem_status, offset, limit)
         workitems: List[Dict[str, Any]] = []
-        for workitem in data:
+        for workitem in data["data"]:
             workitems.append({
                 "workitemId":workitem.get("workitemId"),
                 "workitemKey":workitem.get("workitemKey"),
@@ -112,7 +113,7 @@ async def create_workitem(title: str, description: str, priority: str, workitem_
     try:
         r = await client.create_workitem(title, description, priority, workitem_type)
         logger.info("工作项创建成功")
-        return r.json()
+        return r
     except Exception as e:
         logger.error(f"创建工作项失败: {str(e)}")
         return {"error": f"创建工作项失败: {str(e)}"}
@@ -147,7 +148,7 @@ async def get_workitem_details(workitem_id: str) -> Dict[str, Any]:
     """获取工作项详情和附件元数据"""
     logger.info(f"开始获取工作项 {workitem_id} 的详情")
     try:
-        data = await client.get_workitem(workitem_id)
+        data = await client.get_workitem_details(workitem_id)
 
         attachments: List[Dict[str, Any]] = []
 

@@ -3,7 +3,7 @@ from typing import Optional, Any
 
 REQUEST_TIMEOUT = 60
 
-workitem_type={
+workitem_type_map={
     "故事":{
         "workitemTypeId":"2",
         "workitemTypeName":"user-story"
@@ -35,6 +35,7 @@ class DevOpsClient:
         h = {}
         if self._token:
             h["Authorization"] = f"Bearer {self._token}"
+            h["Content-Type"] = "application/json"
         return h
 
     async def get(self, url: str):
@@ -104,7 +105,7 @@ class DevOpsClient:
 
         """
         url = f"{self.base_url}/api/devops/pm/projects"
-        r = await self.request(url)
+        r = await self.get(url)
         return r.json()
 
     async def query_workitem_list(self,project_id:str,workitem_status:str,offset:int,limit:int) -> list[dict[str, Any]]:
@@ -150,7 +151,7 @@ class DevOpsClient:
         "params":{"offset":offset,"limit":limit}
         }
         url = f"{self.base_url}/api/devops/pm/workitems/actions/query"
-        r = await self.request(url)
+        r = await self.post(url,data=payload)
         return r.json()
 
     async def get_workitem_details(self, workitem_id: str):
@@ -209,12 +210,10 @@ class DevOpsClient:
             "title":title,
             "versionId":"ESB-381",
             "versionName":"iPaaS920",
-            "workitemTypeId":"2",
-            "workitemTypeName":"user-story",
             "description":description,
             "priority":priority,
-            "workitemTypeId":workitem_type[workitem_type]["workitemTypeId"],
-            "workitemTypeName":workitem_type[workitem_type]["workitemTypeName"]
+            "workitemTypeId":workitem_type_map[workitem_type]["workitemTypeId"],
+            "workitemTypeName":workitem_type_map[workitem_type]["workitemTypeName"]
         }
         url = f"{self.base_url}/api/devops/pm/workitems"
         r = await self.post(url,payload)
