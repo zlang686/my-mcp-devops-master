@@ -4,23 +4,39 @@ from typing import Optional, Any
 REQUEST_TIMEOUT = 60
 
 workitem_type_map={
-    "故事":{
+    "story":{
         "workitemTypeId":"2",
         "workitemTypeName":"user-story"
     },
-    "任务":{
+    "task":{
         "workitemTypeId":"3",
         "workitemTypeName":"task"
     },
-    "BUG":{
+    "bug":{
         "workitemTypeId":"4",
         "workitemTypeName":"bug"
     },
-    "风险":{
+    "risk":{
         "workitemTypeId":"5",
         "workitemTypeName":"risk"
     }
 }
+
+def priority_convert(priority: str) -> str:
+    """将优先级转换为DevOps优先级"""
+    priority_map = {
+        "P0":"highest",
+        "P1":"high",
+        "P2":"medium",
+        "P3":"low",
+        "P4":"lowest"
+    }
+    return priority_map.get(priority, "1")
+# highest 最高
+# high 高
+# medium 中等
+# low 低
+# lowest 最低
 
 class DevOpsClient:
 
@@ -104,7 +120,7 @@ class DevOpsClient:
             项目列表
 
         """
-        url = f"{self.base_url}/api/devops/pm/projects"
+        url = f"{self.base_url}/api/pm/projects/actions/querybyuser"
         r = await self.get(url)
         return r.json()
 
@@ -150,7 +166,7 @@ class DevOpsClient:
         "noDueDate":None,
         "params":{"offset":offset,"limit":limit}
         }
-        url = f"{self.base_url}/api/devops/pm/workitems/actions/query"
+        url = f"{self.base_url}/api/pm/workitems/actions/query"
         r = await self.post(url,data=payload)
         return r.json()
 
@@ -164,7 +180,7 @@ class DevOpsClient:
             工作项详情
 
         """
-        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/details"
+        url = f"{self.base_url}/api/pm/workitems/{workitem_id}/details"
         r = await self.get(url)
         return r.json()
 
@@ -182,7 +198,7 @@ class DevOpsClient:
         r.encoding = "utf-8"
         return r.text
 
-    async def create_workitem(self,title:str,description:str,priority:str,workitem_type:str):
+    async def create_workitem(self,title:str,description:str,priority:str,workitem_type:str,man_day:int):
         """创建工作项
 
         Args:
@@ -195,28 +211,30 @@ class DevOpsClient:
             工作项详情
 
         """
-        payload={
-            "effectVersionIds":"ESB-381",
+        if not self._token:
+            await self.login()
+        workitem={
+            "effectVersionIds":"IPAAS-2",
             "assignee":self._user_info.userName,
             "assigneeEmpName":self._user_info.empName,
             "assigneeStatus":"on",
-            "iterationId":"ESB-201",
-            "iterationName":"Sprint1",
-            "moduleId":"10817",
-            "moduleName":"esb-governor-server",
-            "projectCode":"ESB",
-            "projectId":"341",
-            "projectName":"ESB",
+            "iterationId":"IPAAS-1",
+            "iterationName":"spint1",
+            "moduleId":"IPAAS-1",
+            "moduleName":"ipaas-portal",
+            "projectCode":"IPAAS",
+            "projectId":"1",
+            "projectName":"IPAAS",
             "title":title,
-            "versionId":"ESB-381",
-            "versionName":"iPaaS920",
+            "versionId":"IPAAS-2",
+            "versionName":"V9.2",
             "description":description,
-            "priority":priority,
+            "priority":priority_convert(priority),
             "workitemTypeId":workitem_type_map[workitem_type]["workitemTypeId"],
             "workitemTypeName":workitem_type_map[workitem_type]["workitemTypeName"]
         }
-        url = f"{self.base_url}/api/devops/pm/workitems"
-        r = await self.post(url,payload)
+        url = f"{self.base_url}/api/pm/workitems"
+        r = await self.post(url,{"workitem":workitem})
         return r.json()
 
     async def add_workitem_comment(self,project_id:str,workitem_id:str,comment:str):
@@ -235,7 +253,7 @@ class DevOpsClient:
             "projectId":project_id,
             "comment":comment
         }
-        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/workitem-comments"
+        url = f"{self.base_url}/api/pm/workitems/{workitem_id}/workitem-comments"
         r = await self.post(url,payload)
         return r.json()
 
@@ -251,7 +269,7 @@ class DevOpsClient:
 
         """
         payload={"workitem":{"workitemId":workitem_id,"workitemStatus":workitem_status}}
-        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
+        url = f"{self.base_url}/api/pm/workitems/{workitem_id}"
         r = await self.post(url,payload)
         return r.json()
 
@@ -264,7 +282,7 @@ class DevOpsClient:
         Raises:
             httpx.HTTPError: If login fails
         """
-        url = f"{self.base_url}/api/devops/uc/users/login"
+        url = f"{self.base_url}/api/uc/users/login"
         payload = {"userName": self.username, "password": self.password}
         headers={"Authorization":""}
         async with httpx.AsyncClient() as client:
@@ -274,7 +292,7 @@ class DevOpsClient:
 
         if "token" in data:
             self._token = data["token"]
-            self._user_info = UserInfo(data["empId"],data["empName"],data["nickName"],data["userName"])
+            self._user_info = UserInfo(data["empId"],data["empName"],data["nickname"],data["userName"])
         return data
 
 class UserInfo:

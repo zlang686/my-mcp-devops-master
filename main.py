@@ -106,12 +106,12 @@ async def get_workitem_list(project_id: str, workitem_status: str, offset: int, 
         logger.error(f"获取工作项列表失败: {str(e)}")
         return {"error": f"获取工作项列表失败: {str(e)}"}
 
-@mcp.tool(description="创建新的工作项，需要提供标题、描述、优先级和工作项类型")
-async def create_workitem(title: str, description: str, priority: str, workitem_type: str) -> Dict[str, Any]:
+@mcp.tool(description="创建新的工作项，需要提供标题、描述、优先级、工作项类型、评估工时")
+async def create_workitem(title: str, description: str, priority: str, workitem_type: str,man_day:int) -> Dict[str, Any]:
     """创建工作项"""
     logger.info(f"开始创建工作项: {title}")
     try:
-        r = await client.create_workitem(title, description, priority, workitem_type)
+        r = await client.create_workitem(title, description, priority, workitem_type, man_day)
         logger.info("工作项创建成功")
         return r
     except Exception as e:
