@@ -32,6 +32,9 @@ def priority_convert(priority: str) -> str:
         "P4":"lowest"
     }
     return priority_map.get(priority, "1")
+def man_hour_convert(man_hour:int) -> int:
+    """将工时转换为DevOps工时"""
+    return man_hour*3600
 # highest 最高
 # high 高
 # medium 中等
@@ -45,7 +48,7 @@ class DevOpsClient:
         self.username = username
         self.password = password
         self._token: Optional[str] = None
-        self._user_info: Optional[UserInfo] = None
+        
 
     def headers(self):
         h = {}
@@ -113,7 +116,7 @@ class DevOpsClient:
             r.raise_for_status()
             return r
 
-    async def get_project(self) -> list[dict[str, Any]]:
+    async def get_project(self) -> dict[str, Any]:
         """获取当前用户的所有项目
 
         Returns:
@@ -124,7 +127,7 @@ class DevOpsClient:
         r = await self.get(url)
         return r.json()
 
-    async def query_workitem_list(self,project_id:str,workitem_status:str,offset:int,limit:int) -> list[dict[str, Any]]:
+    async def query_workitem_list(self,project_id:str,workitem_status:str,offset:int,limit:int) -> dict[str, Any]:
         """获取项目下的工作项列表
 
         Args:
@@ -198,7 +201,7 @@ class DevOpsClient:
         r.encoding = "utf-8"
         return r.text
 
-    async def create_workitem(self,title:str,description:str,priority:str,workitem_type:str,man_day:int):
+    async def create_workitem(self,title:str,description:str,priority:str,workitem_type:str,parent_workitem_id:str,man_hour:int):
         """创建工作项
 
         Args:
@@ -228,6 +231,8 @@ class DevOpsClient:
             "title":title,
             "versionId":"IPAAS-2",
             "versionName":"V9.2",
+            "parentWorkitemId":parent_workitem_id,
+            "timeEstimate":man_hour_convert(man_hour),
             "description":description,
             "priority":priority_convert(priority),
             "workitemTypeId":workitem_type_map[workitem_type]["workitemTypeId"],
@@ -235,7 +240,13 @@ class DevOpsClient:
         }
         url = f"{self.base_url}/api/pm/workitems"
         r = await self.post(url,{"workitem":workitem})
-        return r.json()
+        data=r.json()
+        result={
+            "workitem_id":data["workitemId"],
+            "parent_workitem_id":data["parentWorkitemId"],
+            "project_id":data["projectId"]
+        }
+        return result
 
     async def add_workitem_comment(self,project_id:str,workitem_id:str,comment:str):
         """添加工作项评论
@@ -257,8 +268,8 @@ class DevOpsClient:
         r = await self.post(url,payload)
         return r.json()
 
-    async def chenage_workitem_status(self,workitem_id:str,workitem_status:str):
-        """变更工作项状态
+    async def change_workitem_status(self,workitem_id:str,workitem_status:str):
+        """变更工作项状态an
 
         Args:
             workitem_id: 工作项id

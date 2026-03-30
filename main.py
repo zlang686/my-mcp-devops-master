@@ -77,7 +77,7 @@ async def get_project() -> List[Dict[str, Any]]:
         return projects
     except Exception as e:
         logger.error(f"获取项目列表失败: {str(e)}")
-        return {"error": f"获取项目列表失败: {str(e)}"}
+        return [{"error": f"获取项目列表失败: {str(e)}"}]
 
 @mcp.tool(description="查询指定项目下的工作项列表，支持按状态筛选，返回工作项详细信息")
 async def get_workitem_list(project_id: str, workitem_status: str, offset: int, limit: int) -> List[Dict[str, Any]]:
@@ -104,14 +104,14 @@ async def get_workitem_list(project_id: str, workitem_status: str, offset: int, 
         return workitems
     except Exception as e:
         logger.error(f"获取工作项列表失败: {str(e)}")
-        return {"error": f"获取工作项列表失败: {str(e)}"}
+        return [{"error": f"获取工作项列表失败: {str(e)}"}]
 
-@mcp.tool(description="创建新的工作项，需要提供标题、描述、优先级、工作项类型、评估工时")
-async def create_workitem(title: str, description: str, priority: str, workitem_type: str,man_day:int) -> Dict[str, Any]:
+@mcp.tool(description="创建新的工作项，需要提供标题、描述、优先级、工作项类型、父工作项ID（可选，为空表示根工作项）、评估工时")
+async def create_workitem(title: str, description: str, priority: str, workitem_type: str,parent_workitem_id:str,man_hour:int) -> Dict[str, Any]:
     """创建工作项"""
     logger.info(f"开始创建工作项: {title}")
     try:
-        r = await client.create_workitem(title, description, priority, workitem_type, man_day)
+        r = await client.create_workitem(title, description, priority, workitem_type,parent_workitem_id, man_hour)
         logger.info("工作项创建成功")
         return r
     except Exception as e:
