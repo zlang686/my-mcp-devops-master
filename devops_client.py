@@ -43,10 +43,14 @@ def man_hour_convert(man_hour:int) -> int:
 
 class DevOpsClient:
 
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, username: str, password: str, project_id: str, iteration_id: str, module_id: str, version_id: str):
         self.base_url = base_url
         self.username = username
         self.password = password
+        self.project_id = project_id
+        self.iteration_id = iteration_id
+        self.module_id = module_id
+        self.version_id = version_id
         self._token: Optional[str] = None
         
 
@@ -217,20 +221,15 @@ class DevOpsClient:
         if not self._token:
             await self.login()
         workitem={
-            "effectVersionIds":"IPAAS-2",
+            "effectVersionIds":self.version_id,
             "assignee":self._user_info.userName,
             "assigneeEmpName":self._user_info.empName,
             "assigneeStatus":"on",
-            "iterationId":"IPAAS-1",
-            "iterationName":"spint1",
-            "moduleId":"IPAAS-1",
-            "moduleName":"ipaas-portal",
-            "projectCode":"IPAAS",
-            "projectId":"1",
-            "projectName":"IPAAS",
+            "iterationId":self.iteration_id,
+            "moduleId":self.module_id,
+            "projectId":self.project_id,
             "title":title,
-            "versionId":"IPAAS-2",
-            "versionName":"V9.2",
+            "versionId":self.version_id,
             "parentWorkitemId":parent_workitem_id,
             "timeEstimate":man_hour_convert(man_hour),
             "description":description,
@@ -283,7 +282,28 @@ class DevOpsClient:
         url = f"{self.base_url}/api/pm/workitems/{workitem_id}"
         r = await self.post(url,payload)
         return r.json()
-
+    
+    async def create_testcases(self,case_title:str,note:str,precondition:str,operation_step:str,workitem_id:str,default_priority:str):
+        if not self._token:
+            await self.login()
+        payload={
+            "testcase":{
+                "caseTitle":case_title,
+                "note":note,
+                "precondition":precondition,
+                "operationStep":operation_step,
+                "workitems":[{"workitemId":workitem_id}],
+                "defaultPriority":default_priority,
+                "projectId":self.project_id,
+                "caseType":"funcation",
+                "defaultAssignee":self._user_info.userName,
+                "groupId":"1"
+            }
+        }
+        url = f"{self.base_url}/api/pm/testcases"
+        r = await self.post(url,payload)
+        return r.json()
+    
     async def login(self) -> dict[str, Any]:
         """登录devops平台并获取token
 

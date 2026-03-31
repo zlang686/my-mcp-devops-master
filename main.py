@@ -1,8 +1,10 @@
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from mcp.server.fastmcp import FastMCP
 from devops_client import DevOpsClient
 from config import Config
+from pydantic import BaseModel
+from pydantic import TypeAdapter
 
 # 配置日志
 logging.basicConfig(
@@ -51,6 +53,13 @@ workitem_type: Dict[str, Dict[str, str]] = {
     }
 }
 
+
+class Step(BaseModel):
+    sortno: int
+    step: str
+    result: str
+
+
 # 初始化 MCP 服务器和客户端
 mcp: FastMCP = FastMCP("devops-mcp-master")
 config: Config = Config.from_env()
@@ -58,6 +67,10 @@ client: DevOpsClient = DevOpsClient(
     base_url=config.base_url,
     username=config.username,
     password=config.password,
+    project_id=config.project_id,
+    iteration_id=config.iteration_id,
+    module_id=config.module_id,
+    version_id=config.version_id,
 )
 @mcp.tool(description="获取当前用户的所有项目列表，返回项目ID、项目代码和项目名称")
 async def get_project() -> List[Dict[str, Any]]:
@@ -247,7 +260,16 @@ async def get_attachment_chunk(file_url: str, offset: int = 0, length: int = 400
         }
 
 
-
+async def create_testcase(case_title: str, note: str, precondition: str, operation_step: List[Step], workitem_id: str, default_priority: str) -> Dict[str, Any]:
+    """创建测试用例"""
+    logger.info(f"开始创建测试用例: {case_title}")
+    try:
+        data = await client.create_testcases(case_title, note, precondition, TypeAdapter(List[Step]).dump_json(operation_step).decode(), workitem_id, default_priority)
+        logger.info("测试用例创建成功")
+        returncase_id = data.get("id")
+        return {"id": returncase_id}
+    except Exception as e:
+        return {"error": f"创建测试用例失败: {str(e)}"}
 
 
 @mcp.tool(description="返回附件资源的URI和MIME类型，用于直接访问附件")
