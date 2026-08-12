@@ -43,21 +43,19 @@ def man_hour_convert(man_hour:int) -> int:
 
 class DevOpsClient:
 
-    def __init__(self, base_url: str, username: str, password: str, project_id: str, iteration_id: str, module_id: str, version_id: str):
+    def __init__(self, base_url: str,afc_token:str, project_id: str, iteration_id: str, module_id: str, version_id: str):
         self.base_url = base_url
-        self.username = username
-        self.password = password
+        self.afc_token=afc_token
         self.project_id = project_id
         self.iteration_id = iteration_id
         self.module_id = module_id
         self.version_id = version_id
-        self._token: Optional[str] = None
         
 
     def headers(self):
         h = {}
         if self._token:
-            h["Authorization"] = f"Bearer {self._token}"
+            h["Authorization"] = f"afc-token:{self.afc_token}"
             h["Content-Type"] = "application/json"
         return h
 
@@ -73,8 +71,8 @@ class DevOpsClient:
         Raises:
             httpx.HTTPError: If request fails
         """
-        if not self._token:
-            await self.login()
+        # if not self._token:
+        #     await self.login()
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             r = await client.get(url, headers=self.headers())
             r.raise_for_status()
@@ -93,8 +91,8 @@ class DevOpsClient:
         Raises:
             httpx.HTTPError: If request fails
         """
-        if not self._token:
-            await self.login()
+        # if not self._token:
+        #     await self.login()
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             r = await client.post(url, headers=self.headers(), json=data)
             r.raise_for_status()
@@ -113,8 +111,8 @@ class DevOpsClient:
         Raises:
             httpx.HTTPError: If request fails
         """
-        if not self._token:
-            await self.login()
+        # if not self._token:
+        #     await self.login()
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             r = await client.put(url, headers=self.headers(), json=data)
             r.raise_for_status()
@@ -131,7 +129,7 @@ class DevOpsClient:
         r = await self.get(url)
         return r.json()
 
-    async def query_workitem_list(self,project_id:str,workitem_status:str,offset:int,limit:int) -> dict[str, Any]:
+    async def query_workitem_list(self,project_id:str,workitem_key:str,workitem_status:str,offset:int,limit:int) -> dict[str, Any]:
         """获取项目下的工作项列表
 
         Args:
@@ -150,7 +148,7 @@ class DevOpsClient:
         "moduleId":None,
         "notInModule":None,
         "workitemStatus":workitem_status,
-        "workitemKey":None,
+        "workitemKey":workitem_key,
         "workitemTitle":None,
         "workitemTitleInFilter":None,
         "labelName":None,
@@ -169,7 +167,7 @@ class DevOpsClient:
         "otherConditions":[],
         "projectId":project_id,
         "queryInXmind":False,
-        "workitemTypeId":"3,4,5",
+        "workitemTypeId":"2,3,4,5",
         "noDueDate":None,
         "params":{"offset":offset,"limit":limit}
         }
@@ -218,8 +216,8 @@ class DevOpsClient:
             工作项详情
 
         """
-        if not self._token:
-            await self.login()
+        # if not self._token:
+        #     await self.login()
         workitem={
             "effectVersionIds":self.version_id,
             "assignee":self._user_info.userName,
@@ -284,8 +282,8 @@ class DevOpsClient:
         return r.json()
     
     async def create_testcases(self,case_title:str,note:str,precondition:str,operation_step:str,workitem_id:str,default_priority:str):
-        if not self._token:
-            await self.login()
+        # if not self._token:
+        #     await self.login()
         payload={
             "testcase":{
                 "caseTitle":case_title,
@@ -313,17 +311,16 @@ class DevOpsClient:
         Raises:
             httpx.HTTPError: If login fails
         """
-        url = f"{self.base_url}/api/uc/users/login"
+        url = f"{self.base_url}/api/devops/uc/users/current-user"
         payload = {"userName": self.username, "password": self.password}
-        headers={"Authorization":""}
+        headers={f"Authorization":f"afc-token{self.afc_token}"}
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload,headers=headers)
             response.raise_for_status()
             data = response.json()
 
-        if "token" in data:
-            self._token = data["token"]
-            self._user_info = UserInfo(data["empId"],data["empName"],data["nickname"],data["userName"])
+        if data:
+            self._user_info = UserInfo(data["id"],data["userName"],data["userName"],data["employee"]["empName"])
         return data
 
 class UserInfo:
