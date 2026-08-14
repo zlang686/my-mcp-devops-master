@@ -251,15 +251,61 @@ async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, 
         logger.error(f"添加评论失败: {str(e)}")
         return {"error": f"添加评论失败: {str(e)}"}
 
-@mcp.tool(description="变更指定工作项的状态，需要提供工作项ID和新的状态")
+@mcp.tool(description="""变更指定工作项的状态，需要提供工作项ID和新的状态。
+
+服务端会先查询工作项的真实当前状态并校验转换是否合法，非法转换将返回错误及当前状态允许的目标状态列表。
+
+【工作项类型与状态转换规则】（必须遵守，仅下列转换合法）
+  bug（工作项类型ID=4）:
+    closed(已关闭)      -> reopened(重新打开)
+    in-progress(处理中) -> closed(关闭), open(转为待办), to-be-tested(解决完成)
+    open(待解决)        -> closed(关闭), in-progress(处理中), to-be-tested(解决完成)
+    reopened(重新打开)  -> closed(关闭), in-progress(处理中)
+    testing(测试中)     -> closed(关闭), reopened(打回), verified(验证通过)
+    to-be-tested(待测试)-> closed(关闭), reopened(打回), testing(开始测试)
+    verified(验证通过)  -> closed(关闭)
+
+  风险（工作项类型ID=5）:
+    closed(已关闭)      -> reopened(重新打开)
+    in-progress(处理中) -> closed(关闭), resolved(已解决)
+    open(待解决)        -> closed(关闭), in-progress(处理中), resolved(已解决)
+    reopened(重新打开)  -> closed(关闭), in-progress(处理中), resolved(已解决)
+    resolved(已解决)    -> closed(关闭), reopened(重新打开)
+
+  故事（工作项类型ID=2）:
+    developing(开发中)  -> open(转为待办), to-be-tested(开发完成)
+    open(待开发)        -> developing(开发中)
+    testing(测试中)     -> open(打回), verified(验证通过)
+    to-be-tested(待测试)-> open(打回), testing(测试中)
+    verified(验证通过)  -> open(重新打开), released(发布)
+
+  任务（工作项类型ID=3）:
+    done(完成)          -> in-progress(重新处理), to-do(重新打开)
+    in-progress(处理中) -> done(完成), to-do(转为待办)
+    to-do(待办)         -> done(完成), in-progress(开始处理)
+
+【注意】同一中文状态在不同类型下可能对应不同英文值（如"处理中"对 bug 是 in-progress，对故事是 developing）。变更状态时传入的 workitem_status 必须是目标类型的合法英文值。
+
+【示例】将一个 bug 从"待解决"变为"处理中"：change_workitem_status(workitem_id="xxx", workitem_status="in-progress")
+""")
 async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status: str) -> Dict[str, Any]:
     """变更工作项状态"""
     logger.info(f"开始变更工作项 {workitem_id} 的状态为 {workitem_status}")
     try:
         client = await get_client(ctx)
+        # 服务端校验：查询真实当前状态，检查转换是否合法
+        check = await client.validate_status_transition(workitem_id, workitem_status)
+        if not check["valid"]:
+            logger.warning(f"非法状态转换: 类型={check['workitem_type']}, 当前状态={check['current_status']}, 目标状态={workitem_status}, 允许={check['allowed_statuses']}")
+            return {
+                "error": f"非法状态转换：当前状态 {check['current_status']} 不允许变更为 {workitem_status}",
+                "workitem_type": check["workitem_type"],
+                "current_status": check["current_status"],
+                "allowed_statuses": check["allowed_statuses"],
+            }
         r = await client.change_workitem_status(workitem_id, workitem_status)
         logger.info("工作项状态变更成功")
-        return r.json()
+        return r
     except Exception as e:
         logger.error(f"变更工作项状态失败: {str(e)}")
         return {"error": f"变更工作项状态失败: {str(e)}"}
