@@ -22,6 +22,45 @@ workitem_type_map={
     }
 }
 
+# 工作项类型ID → 类型名 反向映射（workitem_type_map 的逆向，用于从详情响应的 typeId 反查类型名）
+WORKITEM_TYPE_ID_TO_NAME = {
+    v["workitemTypeId"]: k for k, v in workitem_type_map.items()
+}
+
+# 工作项状态转换规则表：{类型名: {当前状态: [允许的目标状态]}}
+# 键名与 workitem_type_map 的键一致（story/task/bug/risk）
+# 规则源自 DevOps 平台定义
+STATUS_TRANSITIONS = {
+    "bug": {
+        "closed": ["reopened"],
+        "in-progress": ["closed", "open", "to-be-tested"],
+        "open": ["closed", "in-progress", "to-be-tested"],
+        "reopened": ["closed", "in-progress"],
+        "testing": ["closed", "reopened", "verified"],
+        "to-be-tested": ["closed", "reopened", "testing"],
+        "verified": ["closed"],
+    },
+    "risk": {
+        "closed": ["reopened"],
+        "in-progress": ["closed", "resolved"],
+        "open": ["closed", "in-progress", "resolved"],
+        "reopened": ["closed", "in-progress", "resolved"],
+        "resolved": ["closed", "reopened"],
+    },
+    "story": {
+        "developing": ["open", "to-be-tested"],
+        "open": ["developing"],
+        "testing": ["open", "verified"],
+        "to-be-tested": ["open", "testing"],
+        "verified": ["open", "released"],
+    },
+    "task": {
+        "done": ["in-progress", "to-do"],
+        "in-progress": ["done", "to-do"],
+        "to-do": ["done", "in-progress"],
+    },
+}
+
 def priority_convert(priority: str) -> str:
     """将优先级转换为DevOps优先级"""
     priority_map = {
