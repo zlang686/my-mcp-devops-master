@@ -1,6 +1,6 @@
 import httpx
 from typing import Optional, Any
-
+import logging
 REQUEST_TIMEOUT = 60
 
 workitem_type_map={
@@ -41,6 +41,13 @@ def man_hour_convert(man_hour:int) -> int:
 # low 低
 # lowest 最低
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 class DevOpsClient:
 
     def __init__(self, base_url: str,afc_token:str, project_id: str, iteration_id: str, module_id: str, version_id: str):
@@ -54,7 +61,7 @@ class DevOpsClient:
 
     def headers(self):
         h = {}
-        if self._token:
+        if self.afc_token:
             h["Authorization"] = f"afc-token:{self.afc_token}"
             h["Content-Type"] = "application/json"
         return h
@@ -125,16 +132,16 @@ class DevOpsClient:
             项目列表
 
         """
-        url = f"{self.base_url}/api/pm/projects/actions/querybyuser"
+        url = f"{self.base_url}/api/devops/pm/projects/actions/querybyuser"
         r = await self.get(url)
         return r.json()
 
-    async def query_workitem_list(self,project_id:str,workitem_key:str,workitem_status:str,offset:int,limit:int) -> dict[str, Any]:
+    async def query_workitem_list(self,workitem_key:str,workitem_status:str,workitem_type_id:str,offset:int,limit:int) -> dict[str, Any]:
         """获取项目下的工作项列表
 
         Args:
-            project_id: 项目id
             workitem_status: 工作项状态 open=待解决 ,in-progress=处理中,reopened=重新打开
+            workitem_type_id: 工作项类型id
             offset: 偏移量
             limit: 限制数量
 
@@ -142,6 +149,8 @@ class DevOpsClient:
             工作项列表
 
         """
+        logger.info(f"开始查询工作项列表，workitem_key={workitem_key},workitem_status={workitem_status},workitem_type_id={workitem_type_id},offset={offset},limit={limit}")
+        logger.info(f"username={self._user_info.userName},project_id={self.project_id}")
         payload = {"includeProgress":False,
         "notInIteration":None,
         "iterationId":None,
@@ -152,7 +161,7 @@ class DevOpsClient:
         "workitemTitle":None,
         "workitemTitleInFilter":None,
         "labelName":None,
-        "stakeholder":self.username,
+        "stakeholder":self._user_info.userName,
         "stakeholderAction":"assign",
         "orderBys":None,
         "versionId":None,
@@ -165,13 +174,13 @@ class DevOpsClient:
         "includeChildCount":True,
         "includeRefProject":False,
         "otherConditions":[],
-        "projectId":project_id,
+        "projectId":self.project_id,
         "queryInXmind":False,
-        "workitemTypeId":"2,3,4,5",
+        "workitemTypeId":workitem_type_id,
         "noDueDate":None,
         "params":{"offset":offset,"limit":limit}
         }
-        url = f"{self.base_url}/api/pm/workitems/actions/query"
+        url = f"{self.base_url}/api/devops/pm/workitems/actions/query"
         r = await self.post(url,data=payload)
         return r.json()
 
@@ -185,7 +194,7 @@ class DevOpsClient:
             工作项详情
 
         """
-        url = f"{self.base_url}/api/pm/workitems/{workitem_id}/details"
+        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/details"
         r = await self.get(url)
         return r.json()
 
@@ -235,7 +244,7 @@ class DevOpsClient:
             "workitemTypeId":workitem_type_map[workitem_type]["workitemTypeId"],
             "workitemTypeName":workitem_type_map[workitem_type]["workitemTypeName"]
         }
-        url = f"{self.base_url}/api/pm/workitems"
+        url = f"{self.base_url}/api/devops/pm/workitems"
         r = await self.post(url,{"workitem":workitem})
         data=r.json()
         result={
@@ -261,7 +270,7 @@ class DevOpsClient:
             "projectId":project_id,
             "comment":comment
         }
-        url = f"{self.base_url}/api/pm/workitems/{workitem_id}/workitem-comments"
+        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/workitem-comments"
         r = await self.post(url,payload)
         return r.json()
 
@@ -270,14 +279,14 @@ class DevOpsClient:
 
         Args:
             workitem_id: 工作项id
-            workitem_status: 工作项状态 open=待解决 ,in-progress=处理中,reopened=重新打开
+            workitem_status: 工作项状态，例如：open=待解决 ,in-progress=处理中,reopened=重新打开
 
         Returns:
             工作项状态变更
 
         """
         payload={"workitem":{"workitemId":workitem_id,"workitemStatus":workitem_status}}
-        url = f"{self.base_url}/api/pm/workitems/{workitem_id}"
+        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
         r = await self.post(url,payload)
         return r.json()
     
@@ -298,7 +307,7 @@ class DevOpsClient:
                 "groupId":"1"
             }
         }
-        url = f"{self.base_url}/api/pm/testcases"
+        url = f"{self.base_url}/api/devops/pm/testcases"
         r = await self.post(url,payload)
         return r.json()
     
@@ -312,15 +321,15 @@ class DevOpsClient:
             httpx.HTTPError: If login fails
         """
         url = f"{self.base_url}/api/devops/uc/users/current-user"
-        payload = {"userName": self.username, "password": self.password}
-        headers={f"Authorization":f"afc-token{self.afc_token}"}
+        headers={"Authorization":f"afc-token:{self.afc_token}"}
+        logger.info(f"开始校验token，url={url},headers={headers}")
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload,headers=headers)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
 
         if data:
-            self._user_info = UserInfo(data["id"],data["userName"],data["userName"],data["employee"]["empName"])
+            self._user_info = UserInfo(data["id"],data["employee"]["empName"],data["userName"],data["userName"])
         return data
 
 class UserInfo:

@@ -1,10 +1,11 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, List, Any
+from typing import Annotated, Dict, List, Any, Optional
 from mcp.server.fastmcp import Context, FastMCP
 from devops_client import DevOpsClient
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import TypeAdapter
 
 # Header 名称定义：MCP 客户端连接时通过这些 headers 传递 DevOps 配置
@@ -67,6 +68,27 @@ workitem_type: Dict[str, Dict[str, str]] = {
         "workitemTypeName":"风险"
     }
 }
+
+
+def format_time_estimate(seconds: Any) -> Optional[str]:
+    """将工作项预估时间（秒）转为可读格式，1d=8h。
+    例如 28800 -> "1d", 14400 -> "4h", 36000 -> "1d2h"。
+    """
+    if seconds is None:
+        return None
+    try:
+        total_seconds = int(seconds)
+    except (TypeError, ValueError):
+        return None
+    if total_seconds <= 0:
+        return "0h"
+    total_hours = round(total_seconds / 3600)
+    days, rem_hours = divmod(total_hours, 8)
+    if days > 0 and rem_hours > 0:
+        return f"{days}d{rem_hours}h"
+    if days > 0:
+        return f"{days}d"
+    return f"{rem_hours}h"
 
 
 class Step(BaseModel):
@@ -136,13 +158,48 @@ mcp: FastMCP = FastMCP("devops-mcp-master", lifespan=app_lifespan)
 #         logger.error(f"获取项目列表失败: {str(e)}")
 #         return [{"error": f"获取项目列表失败: {str(e)}"}]
 
-@mcp.tool(description="查询指定项目下的工作项列表，支持按状态、工作项key筛选，返回工作项详细信息")
-async def get_workitem_list(ctx: Context, project_id: str,workitem_key:str, workitem_status: str, offset: int, limit: int) -> List[Dict[str, Any]]:
+@mcp.tool(description="""查询工作项列表，支持按工作项key、状态、类型筛选，返回工作项详细信息。
+
+【参数格式】
+- workitem_status / workitem_type_id 均为逗号分隔的字符串，为空表示不筛选。
+  例：workitem_status="open,in-progress,developing", workitem_type_id="2,3,4"
+
+【工作项类型 workitem_type_id 取值】
+  2 = 故事(user-story)
+  3 = 任务(task)
+  4 = bug
+  5 = 风险(risk)
+
+【工作项状态 workitem_status 取值（不同类型支持的状态不同）】
+  [bug 4]    open=待解决, in-progress=处理中, to-be-tested=待测试, testing=测试中, verified=验证通过, reopened=重新打开, closed=已关闭
+  [风险 5]   open=待解决, in-progress=处理中, resolved=已解决, reopened=重新打开, closed=已关闭
+  [故事 2]   open=待开发, developing=开发中, to-be-tested=待测试, testing=测试中, verified=验证通过, released=已发布
+  [任务 3]   to-do=待办, in-progress=处理中, done=完成
+
+【关键规则】同一中文状态在不同类型下可能对应不同英文值，需按用户查询的类型把对应英文值取并集后传入。
+  例如"处理中"：对 bug/任务/风险 → in-progress；对故事 → developing(开发中)。若用户同时查 bug 和故事，应传入 "in-progress,developing"。
+  多余的状态值无害（不匹配的类型自动不命中），可放心把可能命中的值都加上。
+
+【示例】用户问"查询待解决、处理中和重新打开的任务、bug和故事"：
+  - 类型：任务(3)+bug(4)+故事(2) → workitem_type_id="2,3,4"
+  - 待解决 → open(bug/故事) + to-do(任务，待办视作待解决)
+  - 处理中 → in-progress(bug/任务) + developing(故事)
+  - 重新打开 → reopened(bug；风险也有 reopened 但本次不含风险)
+  - 取并集 → workitem_status="open,to-do,in-progress,developing,reopened"
+""")
+async def get_workitem_list(
+    ctx: Context,
+    workitem_key: Annotated[str, Field(description="工作项key/标题模糊匹配，为空不过滤")] = "",
+    workitem_status: Annotated[str, Field(description="状态筛选，逗号分隔，取值见工具说明，为空不过滤")] = "",
+    workitem_type_id: Annotated[str, Field(description="类型ID筛选，逗号分隔，取值见工具说明，为空不过滤")] = "",
+    offset: Annotated[int, Field(description="分页偏移，默认0")] = 0,
+    limit: Annotated[int, Field(description="每页数量，默认20")] = 20,
+) -> List[Dict[str, Any]]:
     """查询项目下的当前用户相关的工作项"""
-    logger.info(f"开始查询项目 {project_id} 下的工作项，状态: {workitem_status}, 偏移: {offset}, 限制: {limit}")
+    logger.info(f"开始查询工作项，状态: {workitem_status}, 偏移: {offset}, 限制: {limit}")
     try:
         client = await get_client(ctx)
-        data = await client.query_workitem_list(project_id,workitem_key, workitem_status, offset, limit)
+        data = await client.query_workitem_list(workitem_key, workitem_status,workitem_type_id, offset, limit)
         workitems: List[Dict[str, Any]] = []
         for workitem in data["data"]:
             workitems.append({
@@ -155,8 +212,12 @@ async def get_workitem_list(ctx: Context, project_id: str,workitem_key:str, work
                 "description":workitem.get("description"),
                 "priority":workitem.get("priority"),
                 "workitemStatus":workitem.get("workitemStatus"),
+                "workitemStatusName":workitem.get("workitemStatusName"),
                 "workitemType":workitem_type.get(workitem.get("workitemTypeId"), {}).get("workitemType", "unknown"),
-                "workitemTypeName":workitem_type.get(workitem.get("workitemTypeId"), {}).get("workitemTypeName", "未知")
+                "workitemTypeName":workitem_type.get(workitem.get("workitemTypeId"), {}).get("workitemTypeName", "未知"),
+                "createTime":workitem.get("createTime"),
+                "dueTime":workitem.get("dueTime"),
+                "timeEstimate":format_time_estimate(workitem.get("timeEstimate")),
             })
         logger.info(f"成功获取 {len(workitems)} 个工作项")
         return workitems
@@ -204,7 +265,7 @@ async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status
         return {"error": f"变更工作项状态失败: {str(e)}"}
 
 
-@mcp.tool(description="获取指定工作项的详细信息，包括标题、状态、优先级、负责人、描述和附件元数据")
+@mcp.tool(description="根据工作项id获取指定工作项的详细信息，包括标题、状态、优先级、负责人、描述和附件元数据")
 async def get_workitem_details(ctx: Context, workitem_id: str) -> Dict[str, Any]:
     """获取工作项详情和附件元数据"""
     logger.info(f"开始获取工作项 {workitem_id} 的详情")
