@@ -328,7 +328,54 @@ class DevOpsClient:
         url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
         r = await self.post(url,payload)
         return r.json()
-    
+
+    async def validate_status_transition(self, workitem_id: str, new_status: str) -> dict:
+        """校验工作项状态转换是否合法。
+
+        查询工作项真实详情，提取类型和当前状态，查 STATUS_TRANSITIONS 规则表
+        判断 new_status 是否为当前状态下允许的目标状态。
+
+        Args:
+            workitem_id: 工作项id
+            new_status: 目标状态
+
+        Returns:
+            {
+                "valid": bool,                  # 转换是否合法
+                "workitem_type": str | None,    # 类型名，如 "bug"；未知类型时为 None
+                "current_status": str,          # 真实当前状态
+                "allowed_statuses": list[str],  # 当前状态下允许的目标状态列表
+            }
+
+        Raises:
+            异常向上抛出（HTTP 错误、字段缺失、工作项不存在等），
+            由 main.py 工具的外层 try/except 统一捕获。
+        """
+        details = await self.get_workitem_details(workitem_id)
+        # 强转 str：workitem_type_map 的 typeId 为字符串，但 JSON 响应可能返回整数
+        type_id = str(details.get("workitemTypeId", ""))
+        current_status = details.get("workitemStatus", details.get("status", ""))
+
+        workitem_type = WORKITEM_TYPE_ID_TO_NAME.get(type_id)
+        # 未知类型：不允许转换
+        if workitem_type is None:
+            return {
+                "valid": False,
+                "workitem_type": None,
+                "current_status": current_status,
+                "allowed_statuses": [],
+            }
+
+        transitions = STATUS_TRANSITIONS.get(workitem_type, {})
+        # 终态/未知当前状态：transitions.get 返回 []，valid 自然为 False
+        allowed_statuses = transitions.get(current_status, [])
+        return {
+            "valid": new_status in allowed_statuses,
+            "workitem_type": workitem_type,
+            "current_status": current_status,
+            "allowed_statuses": allowed_statuses,
+        }
+
     async def create_testcases(self,case_title:str,note:str,precondition:str,operation_step:str,workitem_id:str,default_priority:str):
         # if not self._token:
         #     await self.login()
