@@ -251,46 +251,108 @@ class DevOpsClient:
         r.encoding = "utf-8"
         return r.text
 
-    async def create_workitem(self,title:str,description:str,priority:str,workitem_type:str,parent_workitem_id:str,man_hour:int):
+    async def create_workitem(
+        self,
+        title: str,
+        description: str,
+        priority: str,
+        workitem_type: str,
+        man_hour: int,
+        parent_workitem_id: Optional[str] = None,
+        due_time: Optional[str] = None,
+    ) -> dict[str, Any]:
         """创建工作项
+
+        登录由调用方（main.py 的 get_client）保证已完成，self._user_info 可用。
 
         Args:
             title: 工作项标题
-            description: 工作项描述
-            priority: 优先级
-            workitem_type: 工作项类型 3=任务,4=缺陷,5=需求
+            description: 工作项描述，HTML 富文本格式（如 <p>...</p><ul><li>...</li></ul>）；为空则置空；纯文本（无标签）自动包装为 <p> 段落
+            priority: 优先级，可选值 highest/high/medium/low/lowest
+            workitem_type: 工作项类型，可选值 story(故事)/task(任务)/bug/risk(风险)
+            man_hour: 评估工时（小时），内部会转换为秒
+            parent_workitem_id: 父工作项ID，为空表示根工作项
+            due_time: 截止日期，格式 YYYY-MM-DD，可选
 
         Returns:
-            工作项详情
+            工作项关键信息 dict（workitem_id、workitem_key、状态、负责人等）
 
+        Raises:
+            ValueError: workitem_type 或 priority 非法时抛出
         """
-        # if not self._token:
-        #     await self.login()
-        workitem={
-            "effectVersionIds":self.version_id,
-            "assignee":self._user_info.userName,
-            "iterationId":self.iteration_id,
-            "moduleId":self.module_id,
-            "projectId":self.project_id,
-            "title":title,
-            "versionId":self.version_id,
-            "affectVersionIds":self.version_id,
-            "parentWorkitemId":parent_workitem_id,
-            "timeEstimate":man_hour_convert(man_hour),
-            "description":'<p>'+description+'</p>',
-            "priority":priority,
-            "workitemType":{
-                "workitemTypeId": workitem_type_map[workitem_type]["workitemTypeId"],
-            }
+        # 校验工作项类型
+        type_info = workitem_type_map.get(workitem_type)
+        if type_info is None:
+            raise ValueError(
+                f"非法的 workitem_type: {workitem_type}，可选值: story/task/bug/risk"
+            )
+        # 校验优先级
+        valid_priorities = {"highest", "high", "medium", "low", "lowest"}
+        if priority not in valid_priorities:
+            raise ValueError(
+                f"非法的 priority: {priority}，可选值: highest/high/medium/low/lowest"
+            )
 
+        # 构造描述 HTML：空值不包装；疑似已含 HTML 标签则原样透传；否则包装 <p>
+        if not description:
+            desc_html = ""
+        else:
+            stripped = description.strip()
+            if stripped.startswith("<") and stripped.endswith(">"):
+                desc_html = description
+            else:
+                desc_html = f"<p>{description}</p>"
+
+        workitem = {
+            "assignee": self._user_info.userName,
+            "resolver": self._user_info.userName,
+            "iterationId": self.iteration_id,
+            "moduleId": self.module_id,
+            "projectId": self.project_id,
+            "title": title,
+            "versionId": self.version_id,
+            "affectVersionIds": self.version_id,
+            "timeEstimate": man_hour_convert(man_hour),
+            "description": desc_html,
+            "priority": priority,
+            "workitemType": {
+                "workitemTypeId": type_info["workitemTypeId"],
+            },
         }
+        if due_time:
+            workitem["dueTime"] = due_time
+        if parent_workitem_id:
+            workitem["parentWorkitemId"] = parent_workitem_id
+            workitem["parentWorkitem"] = {"workitemId": parent_workitem_id}
+
         url = f"{self.base_url}/api/devops/pm/workitems"
-        r = await self.post(url,{"workitem":workitem})
-        data=r.json()
-        result={
-            "workitem_id":data["workitemId"],
-            "parent_workitem_id":data["parentWorkitemId"],
-            "project_id":data["projectId"]
+        r = await self.post(url, {"workitem": workitem})
+        data = r.json()
+        result = {
+            "workitem_id": data.get("workitemId"),
+            "workitem_key": data.get("workitemKey"),
+            "title": data.get("title"),
+            "workitem_type_id": data.get("workitemTypeId"),
+            "workitem_type_name": data.get("workitemTypeName"),
+            "workitem_status": data.get("workitemStatus"),
+            "workitem_status_name": data.get("workitemStatusName"),
+            "priority": data.get("priority"),
+            "assignee": data.get("assignee"),
+            "assignee_emp_name": data.get("assigneeEmpName"),
+            "project_id": data.get("projectId"),
+            "project_code": data.get("projectCode"),
+            "project_name": data.get("projectName"),
+            "parent_workitem_id": data.get("parentWorkitemId"),
+            "parent_workitem_key": data.get("parentWorkitemKey"),
+            "iteration_id": data.get("iterationId"),
+            "iteration_name": data.get("iterationName"),
+            "version_id": data.get("versionId"),
+            "version_name": data.get("versionName"),
+            "module_id": data.get("moduleId"),
+            "module_name": data.get("moduleName"),
+            "create_time": data.get("createTime"),
+            "due_time": data.get("dueTime"),
+            "time_estimate": data.get("timeEstimate"),
         }
         return result
 

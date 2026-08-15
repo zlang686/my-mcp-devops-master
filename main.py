@@ -207,15 +207,48 @@ async def get_workitem_list(
         logger.error(f"获取工作项列表失败: {str(e)}")
         return [{"error": f"获取工作项列表失败: {str(e)}"}]
 
-@mcp.tool(description="创建新的工作项，需要提供标题、描述、优先级、工作项类型、父工作项ID（可选，为空表示根工作项）、评估工时")
-async def create_workitem(ctx: Context, title: str, description: str, priority: str, workitem_type: str,parent_workitem_id:str,man_hour:int) -> Dict[str, Any]:
+@mcp.tool(description="""创建新的工作项。
+
+必填：title(标题)、description(描述)、priority(优先级)、workitem_type(工作项类型)、man_hour(评估工时，单位：小时)
+可选：parent_workitem_id(父工作项ID，为空表示根工作项)、due_time(截止日期，格式 YYYY-MM-DD)
+
+【description 富文本格式】
+  描述字段支持 HTML 富文本，请直接提供 HTML 片段（无需 <html>/<body> 外壳）。
+  支持标签：p(段落)、br(换行)、strong/b(加粗)、em/i(斜体)、u(下划线)、
+           ul/ol/li(列表)、h1-h6(标题)、blockquote(引用)、code/pre(代码)、a(链接)。
+  示例：<p>实现登录功能</p><ul><li>用户名密码登录</li><li>单点登录</li></ul>
+  注意：传入纯文本（无 HTML 标签）时将自动包装为 <p> 段落，换行符不渲染，请主动用 HTML 标签排版。
+
+【取值说明】
+  workitem_type: story(故事) / task(任务) / bug / risk(风险)
+  priority:      highest(最高) / high(高) / medium(中等) / low(低) / lowest(最低)
+  man_hour:      评估工时，单位为小时（内部自动转换为秒）
+
+返回创建后的工作项关键信息（含 workitem_key、状态、负责人等）。""")
+async def create_workitem(
+    ctx: Context,
+    title: str,
+    description: str,
+    priority: str,
+    workitem_type: str,
+    man_hour: int,
+    parent_workitem_id: Optional[str] = None,
+    due_time: Optional[str] = None,
+) -> Dict[str, Any]:
     """创建工作项"""
-    logger.info(f"开始创建工作项: {title}")
+    logger.info(f"开始创建工作项: {title}, type={workitem_type}, priority={priority}")
     try:
         client = await get_client(ctx)
-        r = await client.create_workitem(title, description, priority, workitem_type,parent_workitem_id, man_hour)
-        logger.info("工作项创建成功")
+        r = await client.create_workitem(
+            title, description, priority, workitem_type,
+            man_hour, parent_workitem_id, due_time,
+        )
+        logger.info(f"工作项创建成功: {r.get('workitem_key')}")
         return r
+    except ValueError as e:
+        # 参数校验错误：返回明确的校验提示，便于调用方修正
+        logger.warning(f"创建工作项参数校验失败: {str(e)}")
+        return {"error": f"参数校验失败: {str(e)}"}
     except Exception as e:
         logger.error(f"创建工作项失败: {str(e)}")
         return {"error": f"创建工作项失败: {str(e)}"}
