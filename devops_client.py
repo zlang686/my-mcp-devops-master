@@ -269,19 +269,20 @@ class DevOpsClient:
         workitem={
             "effectVersionIds":self.version_id,
             "assignee":self._user_info.userName,
-            "assigneeEmpName":self._user_info.empName,
-            "assigneeStatus":"on",
             "iterationId":self.iteration_id,
             "moduleId":self.module_id,
             "projectId":self.project_id,
             "title":title,
             "versionId":self.version_id,
+            "affectVersionIds":self.version_id,
             "parentWorkitemId":parent_workitem_id,
             "timeEstimate":man_hour_convert(man_hour),
-            "description":description,
-            "priority":priority_convert(priority),
-            "workitemTypeId":workitem_type_map[workitem_type]["workitemTypeId"],
-            "workitemTypeName":workitem_type_map[workitem_type]["workitemTypeName"]
+            "description":'<p>'+description+'</p>',
+            "priority":priority,
+            "workitemType":{
+                "workitemTypeId": workitem_type_map[workitem_type]["workitemTypeId"],
+            }
+
         }
         url = f"{self.base_url}/api/devops/pm/workitems"
         r = await self.post(url,{"workitem":workitem})
@@ -292,6 +293,7 @@ class DevOpsClient:
             "project_id":data["projectId"]
         }
         return result
+
 
     async def add_workitem_comment(self,project_id:str,workitem_id:str,comment:str):
         """添加工作项评论
@@ -326,7 +328,7 @@ class DevOpsClient:
         """
         payload={"workitem":{"workitemId":workitem_id,"workitemStatus":workitem_status}}
         url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
-        r = await self.post(url,payload)
+        r = await self.put(url,payload)
         return r.json()
 
     async def validate_status_transition(self, workitem_id: str, new_status: str) -> dict:
@@ -396,7 +398,35 @@ class DevOpsClient:
         url = f"{self.base_url}/api/devops/pm/testcases"
         r = await self.post(url,payload)
         return r.json()
-    
+
+    async def upload_workitem_attachment(self, workitem_id: str, file_name: str, file_data: bytes, content_type: str = "application/octet-stream") -> dict[str, Any]:
+        """上传工作项附件
+
+        使用 multipart/form-data 上传，表单字段名为 attachments。
+        注意：不能复用 self.post()，因为它会强制 Content-Type=application/json，
+        而 multipart 请求的 Content-Type 需由 httpx 自动带上 boundary。
+
+        Args:
+            workitem_id: 工作项id
+            file_name: 文件名（含扩展名，如 "log.png"）
+            file_data: 文件二进制内容
+            content_type: 文件MIME类型，默认 application/octet-stream
+
+        Returns:
+            上传结果
+
+        """
+        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/workitem-attachments"
+        # 不预设 Content-Type，httpx 使用 files= 时会自动设置 multipart/form-data; boundary=...
+        h = {}
+        if self.afc_token:
+            h["Authorization"] = f"afc-token:{self.afc_token}"
+        files = {"attachments": (file_name, file_data, content_type)}
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            r = await client.post(url, headers=h, files=files)
+            r.raise_for_status()
+            return r.json()
+
     async def login(self) -> dict[str, Any]:
         """登录devops平台并获取token
 

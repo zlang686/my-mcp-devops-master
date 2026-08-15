@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Dict, List, Any, Optional
@@ -138,25 +139,6 @@ async def app_lifespan(app: FastMCP):
 
 
 mcp: FastMCP = FastMCP("devops-mcp-master", lifespan=app_lifespan)
-# @mcp.tool(description="获取当前用户的所有项目列表，返回项目ID、项目代码和项目名称")
-# async def get_project() -> List[Dict[str, Any]]:
-#     """获取当前用户的所有项目"""
-#     logger.info("开始获取当前用户的所有项目")
-#     try:
-#         data = await client.get_project()
-#         print("===",data)
-#         projects: List[Dict[str, Any]] = []
-#         for project in data["data"]:
-#             projects.append({
-#                 "projectId":project.get("projectId"),
-#                 "projectCode":project.get("projectCode"),
-#                 "projectName":project.get("projectName")
-#             })
-#         logger.info(f"成功获取 {len(projects)} 个项目")
-#         return projects
-#     except Exception as e:
-#         logger.error(f"获取项目列表失败: {str(e)}")
-#         return [{"error": f"获取项目列表失败: {str(e)}"}]
 
 @mcp.tool(description="""查询工作项列表，支持按工作项key、状态、类型筛选，返回工作项详细信息。
 
@@ -455,6 +437,25 @@ async def get_attachment_resource(file_url: str, file_type: str) -> Dict[str, Li
                 "text": f"获取资源失败: {str(e)}"
             }]
         }
+
+
+@mcp.tool(description="为指定工作项上传附件，需要提供工作项ID、文件名（含扩展名）和base64编码的文件内容")
+async def upload_workitem_attachment(ctx: Context, workitem_id: str, file_name: str, file_content: Annotated[str, Field(description="base64编码的文件内容")]) -> Dict[str, Any]:
+    """上传工作项附件"""
+    logger.info(f"开始为工作项 {workitem_id} 上传附件: {file_name}")
+    try:
+        client = await get_client(ctx)
+        # 从文件名扩展名推断 MIME 类型
+        ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+        content_type = MIME_MAP.get(ext, "application/octet-stream")
+        # 解码 base64 得到文件二进制内容
+        file_data = base64.b64decode(file_content)
+        r = await client.upload_workitem_attachment(workitem_id, file_name, file_data, content_type)
+        logger.info("附件上传成功")
+        return r
+    except Exception as e:
+        logger.error(f"上传工作项附件失败: {str(e)}")
+        return {"error": f"上传工作项附件失败: {str(e)}"}
 
 
 def main():
