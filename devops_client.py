@@ -74,6 +74,18 @@ def priority_convert(priority: str) -> str:
 def man_hour_convert(man_hour:int) -> int:
     """将工时转换为DevOps工时"""
     return man_hour*3600
+
+def to_rich_text(text: str) -> str:
+    """将文本转为 DevOps 富文本字段格式。
+
+    空值返回空串；疑似 HTML（首尾为尖括号）原样透传；纯文本包装为 <p> 段落。
+    """
+    if not text:
+        return ""
+    stripped = text.strip()
+    if stripped.startswith("<") and stripped.endswith(">"):
+        return text
+    return f"<p>{text}</p>"
 # highest 最高
 # high 高
 # medium 中等
@@ -105,11 +117,12 @@ class DevOpsClient:
             h["Content-Type"] = "application/json"
         return h
 
-    async def get(self, url: str):
+    async def get(self, url: str, params: Optional[dict] = None):
         """发送GET请求
 
         Args:
             url: 请求url
+            params: 查询参数字典，None 表示无
 
         Returns:
             响应对象
@@ -120,7 +133,7 @@ class DevOpsClient:
         # if not self._token:
         #     await self.login()
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            r = await client.get(url, headers=self.headers())
+            r = await client.get(url, headers=self.headers(), params=params)
             r.raise_for_status()
             return r
 
@@ -294,14 +307,7 @@ class DevOpsClient:
             )
 
         # 构造描述 HTML：空值不包装；疑似已含 HTML 标签则原样透传；否则包装 <p>
-        if not description:
-            desc_html = ""
-        else:
-            stripped = description.strip()
-            if stripped.startswith("<") and stripped.endswith(">"):
-                desc_html = description
-            else:
-                desc_html = f"<p>{description}</p>"
+        desc_html = to_rich_text(description)
 
         workitem = {
             "assignee": self._user_info.userName,
