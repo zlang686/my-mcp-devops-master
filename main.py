@@ -498,7 +498,7 @@ async def get_testcase_groups(ctx: Context) -> List[Dict[str, Any]]:
 
 @mcp.tool(description="""在指定分组下创建测试用例。
 
-必填：case_title(用例标题)、steps(操作步骤列表)、group_id(所属分组ID，可先调用 get_testcase_groups 查询分组树获取)
+必填：case_title(用例标题)、steps(操作步骤列表)、group_id(所属分组ID，必须来自 get_testcase_groups 查询结果或 create_testcase_group 返回值；服务端会校验，无效时不创建并返回 available_groups 供选择或新建)
 可选：note(备注)、precondition(前置条件)、workitem_ids(关联工作项ID列表)、case_type(用例类型，默认 function)、default_priority(优先级，默认 P1)
 
 【steps 步骤格式】每步含 step(操作描述) 和 result(预期结果)，sortno 按列表顺序自动编号，无需传入。
@@ -527,6 +527,17 @@ async def create_testcase(
     logger.info(f"开始创建测试用例: {case_title}, group_id={group_id}")
     try:
         client = await get_client(ctx)
+        # 分组校验：拦截未查询分组直创、ID 臆造/记错的情况，返回可选分组引导选择或新建
+        groups = await client.get_testcase_groups()
+        group_map = {str(g.get("groupId")): g.get("groupName") for g in groups}
+        if group_id not in group_map:
+            logger.warning(f"分组ID无效: {group_id}，可用分组: {list(group_map)}")
+            return {
+                "error": f"分组ID无效: {group_id}。请从 available_groups 中选择分组后重试，或调用 create_testcase_group 新建分组",
+                "available_groups": [
+                    {"group_id": gid, "group_name": name} for gid, name in group_map.items()
+                ],
+            }
         r = await client.create_testcase(
             case_title, group_id, dump_steps(steps),
             note, precondition, workitem_ids, case_type, default_priority,
