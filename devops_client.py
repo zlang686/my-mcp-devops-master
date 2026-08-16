@@ -488,25 +488,94 @@ class DevOpsClient:
         r = await self.get(url, params={"projectId": self.project_id, "groupType": "testcase"})
         return r.json()
 
-    async def create_testcases(self,case_title:str,note:str,precondition:str,operation_step:str,workitem_id:str,default_priority:str):
-        # if not self._token:
-        #     await self.login()
-        payload={
-            "testcase":{
-                "caseTitle":case_title,
-                "note":note,
-                "precondition":precondition,
-                "operationStep":operation_step,
-                "workitems":[{"workitemId":workitem_id}],
-                "defaultPriority":default_priority,
-                "projectId":self.project_id,
-                "caseType":"funcation",
-                "defaultAssignee":self._user_info.userName,
-                "groupId":"1"
-            }
+    async def create_testcase(
+        self,
+        case_title: str,
+        group_id: str,
+        operation_step: str,
+        note: str = "",
+        precondition: str = "",
+        workitem_ids: Optional[list[str]] = None,
+        case_type: str = "function",
+        default_priority: str = "P1",
+    ) -> dict[str, Any]:
+        """创建测试用例
+
+        登录由调用方（main.py 的 get_client）保证已完成，self._user_info 可用。
+
+        Args:
+            case_title: 用例标题
+            group_id: 所属测试用例分组ID
+            operation_step: 操作步骤，已序列化的 JSON 字符串，格式 [{"sortno":1,"step":"...","result":"..."}]
+            note: 备注（富文本；纯文本自动包 <p>）
+            precondition: 前置条件（富文本；纯文本自动包 <p>）
+            workitem_ids: 关联工作项ID列表，为空表示不关联
+            case_type: 用例类型，默认 function(功能测试)
+            default_priority: 优先级，可选值 P0/P1/P2/P3/P4
+
+        Returns:
+            用例关键信息 dict
+
+        Raises:
+            ValueError: default_priority 非法时抛出
+        """
+        valid_priorities = {"P0", "P1", "P2", "P3", "P4"}
+        if default_priority not in valid_priorities:
+            raise ValueError(
+                f"非法的 default_priority: {default_priority}，可选值: P0/P1/P2/P3/P4"
+            )
+
+        testcase = {
+            "projectId": self.project_id,
+            "caseTitle": case_title,
+            "groupId": group_id,
+            "note": to_rich_text(note),
+            "precondition": to_rich_text(precondition),
+            "operationStep": operation_step,
+            "caseType": case_type,
+            "estimatedTime": None,
+            "caseKey": None,
+            "defaultAssignee": self._user_info.userName,
+            "defaultPriority": default_priority,
+            "workitems": [{"workitemId": wid} for wid in (workitem_ids or [])],
         }
         url = f"{self.base_url}/api/devops/pm/testcases"
-        r = await self.post(url,payload)
+        r = await self.post(url, {"testCase": testcase})
+        data = r.json()
+        return {
+            "case_id": data.get("caseId"),
+            "case_key": data.get("caseKey"),
+            "case_title": data.get("caseTitle"),
+            "case_type": data.get("caseType"),
+            "case_status": data.get("caseStatus"),
+            "group_id": data.get("groupId"),
+            "default_priority": data.get("defaultPriority"),
+            "default_assignee": data.get("defaultAssignee"),
+            "sortno": data.get("sortno"),
+            "create_time": data.get("createTime"),
+            "workitem_ids": [w.get("workitemId") for w in data.get("workitems", [])],
+        }
+
+    async def query_testcase_list(self, group_id: str = "", page_index: int = 0, page_size: int = 200) -> dict[str, Any]:
+        """查询项目下的测试用例列表
+
+        Args:
+            group_id: 分组ID筛选，为空查全项目
+            page_index: 页码，从0开始
+            page_size: 每页数量
+
+        Returns:
+            分页结果 {"total": n, "data": [...], ...}
+        """
+        params: dict[str, Any] = {
+            "projectId": self.project_id,
+            "pageIndex": page_index,
+            "pageSize": page_size,
+        }
+        if group_id:
+            params["groupId"] = group_id
+        url = f"{self.base_url}/api/devops/pm/testcases"
+        r = await self.get(url, params=params)
         return r.json()
 
 
