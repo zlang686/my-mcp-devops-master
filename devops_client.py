@@ -446,6 +446,48 @@ class DevOpsClient:
             "allowed_statuses": allowed_statuses,
         }
 
+    async def create_testcase_group(self, group_name: str, parent_group_id: Optional[str] = None) -> dict[str, Any]:
+        """创建测试用例分组
+
+        Args:
+            group_name: 分组名称
+            parent_group_id: 父分组ID，为空表示根分组
+
+        Returns:
+            分组关键信息 dict
+        """
+        payload = {
+            "group": {
+                "projectId": self.project_id,
+                "groupName": group_name,
+                "parentGroupId": parent_group_id,
+                "groupType": "testcase",
+                "groupScope": "PROJECT",
+            }
+        }
+        url = f"{self.base_url}/api/devops/pcm/groups"
+        r = await self.post(url, payload)
+        data = r.json()
+        return {
+            "group_id": data.get("groupId"),
+            "group_name": data.get("groupName"),
+            "parent_group_id": data.get("parentGroupId"),
+            "group_type": data.get("groupType"),
+            "group_scope": data.get("groupScope"),
+            "create_user": data.get("createUser"),
+            "create_time": data.get("createTime"),
+        }
+
+    async def get_testcase_groups(self) -> list[dict[str, Any]]:
+        """查询项目下的测试用例分组列表
+
+        Returns:
+            分组列表（后端返回裸 JSON 列表，含 hasChild/childGroupIds/caseCount 等字段）
+        """
+        url = f"{self.base_url}/api/devops/pcm/groups"
+        r = await self.get(url, params={"projectId": self.project_id, "groupType": "testcase"})
+        return r.json()
+
     async def create_testcases(self,case_title:str,note:str,precondition:str,operation_step:str,workitem_id:str,default_priority:str):
         # if not self._token:
         #     await self.login()
