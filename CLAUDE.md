@@ -31,24 +31,32 @@ There is currently **no test suite, linter, or formatter configured**. Do not in
 
 ## Architecture
 
-Three-file structure with strict separation between MCP layer and HTTP layer:
+Layered structure with strict separation between MCP layer and HTTP layer:
 
 ```
-main.py          → MCP server: defines @mcp.tool functions, shapes request/response dicts
-devops_client.py → DevOps HTTP API wrapper; owns auth token + user info lifecycle
-config.py        → Config dataclass; loads DEVOPS_* vars from .env (via python-dotenv)
+main.py               → entry point: logging config, imports the tools package, mcp.run()
+server.py             → shared FastMCP instance, app_lifespan (per-session DevOpsClient),
+                       get_client(ctx), required/optional header-name constants
+tools/
+  __init__.py         → imports domain modules to trigger @mcp.tool registration
+  workitems.py        → work-item tools (list/create/details/comment/status-change)
+  attachments.py      → attachment tools (preview/chunk/resource) + preview helpers
+  testcases.py        → test-case tools (group & case create/query) + Step model helpers
+devops_client.py      → DevOps HTTP API wrapper; persistent httpx.AsyncClient + user info
+config.py             → Config dataclass; loads DEVOPS_* vars from .env (legacy, not used at runtime)
 ```
 
-**Key flow:** `main.py` constructs a single `Config` and a single `DevOpsClient` at import time. Each `@mcp.tool` function is a thin adapter that:
-1. Calls the corresponding `DevOpsClient` method.
-2. Reshapes the raw API JSON into a smaller dict (renaming/filtering fields).
-3. Catches all exceptions and returns `{"error": "..."}` rather than raising — do not change this contract without reason, MCP clients depend on tool calls not throwing.
+**Key flow:** tool functions live in `tools/*.py` and register onto the shared `mcp` instance (from `server.py`) at import time; `main.py` merely imports the `tools` package and starts the server. Each tool is a thin adapter that:
+1. Calls `get_client(ctx)` to obtain the session's `DevOpsClient`.
+2. Calls the corresponding `DevOpsClient` method.
+3. Reshapes the raw API JSON into a smaller dict (renaming/filtering fields).
+4. Catches all exceptions and returns `{"error": "..."}` rather than raising — do not change this contract without reason, MCP clients depend on tool calls not throwing.
 
-**Authentication:** `DevOpsClient` lazily logs in (`POST /api/uc/users/login`) on the first request that lacks a token. On success it caches `_token` and a `UserInfo` instance. Public methods (`get`/`post`/`put`) and the mutation helpers (`create_workitem`, `create_testcases`) call `await self.login()` if `_token` is falsy — preserve this lazy-init pattern when adding new endpoints that read `self._user_info`.
+**Authentication:** the MCP client injects configuration via HTTP headers (`X-DevOps-Base-URL`, `X-DevOps-afcToken`, optional `X-DevOps-{Project,Iteration,Module,Version}-ID`). On the first tool call of a session, `get_client` builds a `DevOpsClient` and validates the token via `verify_token()` (`GET /api/devops/uc/users/current-user`), caching a `UserInfo`. Client methods that read `self._user_info` rely on this session-level verification. `DevOpsClient` holds one long-lived `httpx.AsyncClient` (connection pooling); `app_lifespan` calls `aclose()` when the session ends.
 
 **Work-item type mapping** appears in two places and they are **not identical** — keep them in sync when changing types:
 - `devops_client.py` `workitem_type_map` — keyed by human-friendly names (`story`/`task`/`bug`/`risk`), used for **creating** items. Maps to `{workitemTypeId, workitemTypeName}`.
-- `main.py` `workitem_type` — keyed by numeric DevOps type ID (`2`/`3`/`4`/`5`), used for **reading/decoding** queried items.
+- `tools/workitems.py` `workitem_type` — keyed by numeric DevOps type ID (`2`/`3`/`4`/`5`), used for **reading/decoding** queried items.
 
 IDs: `2`=故事/user-story, `3`=任务/task, `4`=bug, `5`=风险/risk.
 
@@ -58,8 +66,8 @@ IDs: `2`=故事/user-story, `3`=任务/task, `4`=bug, `5`=风险/risk.
 
 ## Adding a New MCP Tool
 
-1. Add the underlying HTTP method to `DevOpsClient` in `devops_client.py`. Follow the existing pattern: build the URL from `self.base_url`, call `self.get/post/put`, and `return r.json()` (or the parsed shape). Reuse the lazy `await self.login()` guard if you need `self._user_info`.
-2. Add an `@mcp.tool(...)` adapter in `main.py` with a one-line `description=` (this is what the LLM sees). Wrap the body in try/except and return `{"error": ...}` on failure.
+1. Add the underlying HTTP method to `DevOpsClient` in `devops_client.py`. Follow the existing pattern: build the URL from `self.base_url`, call `self.get/post/put`, and `return r.json()` (or the parsed shape). Methods may read `self._user_info` — it is populated by `verify_token()` during session construction.
+2. Add an `@mcp.tool(...)` adapter in the matching domain module under `tools/` (for a new domain, create the module and import it in `tools/__init__.py`). Use a concise `description=` (this is what the LLM sees). Wrap the body in try/except and return `{"error": ...}` on failure.
 3. When reshaping API responses, only expose the fields a client needs — existing tools deliberately drop most raw fields.
 
 ## Configuration & Environment
@@ -83,7 +91,7 @@ Server runs with `transport="streamable-http"` (see `main.py::main`). There is n
 
 ## Known Gotchas
 
-- `add_workitem_comment` and `change_workitem_status` return `r.json()` on the **already-consumed** `httpx.Response` — `DevOpsClient.post` returns the response object, and the tool calls `.json()` once. Do not call `.json()` twice on the same response.
-- `get_workitem_list` has a typo in its output dict: `"prmoduleIdiority"` maps to `moduleId`. Preserve existing field names when modifying unless explicitly renaming across all consumers.
-- `create_testcase` in `main.py` is **not** decorated with `@mcp.tool` — it is dead/unfinished code (uses `TypeAdapter(List[Step]).dump_json`). Check before wiring it up.
-- `get_project` tool is commented out in `main.py`; the underlying `client.get_project()` still exists.
+- `get_workitem_list` has a typo in its output dict (now lives in `tools/workitems.py`): `"prmoduleIdiority"` maps to `moduleId`. Preserve existing field names when modifying unless explicitly renaming across all consumers.
+- Error contract: list-returning tools (`get_workitem_list`, `get_testcase_groups`) return `{"error": ...}` (a dict) on failure instead of their normal list — do not reintroduce `[{"error": ...}]`.
+- `client.get_project()` exists in `devops_client.py` but no MCP tool exposes it.
+- Tool registration happens at import time: a new `tools/` domain module must be imported in `tools/__init__.py`, otherwise its tools never register.

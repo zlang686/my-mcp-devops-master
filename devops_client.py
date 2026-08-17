@@ -92,11 +92,7 @@ def to_rich_text(text: str) -> str:
 # low 低
 # lowest 最低
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# 日志配置统一在入口 main.py 完成（logging.basicConfig），此处仅获取 logger
 logger = logging.getLogger(__name__)
 
 class DevOpsClient:
@@ -108,16 +104,60 @@ class DevOpsClient:
         self.iteration_id = iteration_id
         self.module_id = module_id
         self.version_id = version_id
+        # 懒创建的长生命周期 HTTP 客户端（连接池复用），会话结束时由 aclose() 关闭
+        self._http = None
+        # 由 verify_token() 填充
+        self._user_info = None
         
 
-    def headers(self):
-        h = {}
-        if self.afc_token:
-            h["Authorization"] = f"afc-token:{self.afc_token}"
-            h["Content-Type"] = "application/json"
-        return h
+    def headers(self) -> dict[str, str]:
+        """构造认证请求头。afc_token 缺失时显式报错，避免静默发出无认证请求。"""
+        if not self.afc_token:
+            raise ValueError("afc_token 未配置，无法发起认证请求")
+        return {
+            "Authorization": f"afc-token:{self.afc_token}",
+            "Content-Type": "application/json",
+        }
 
-    async def get(self, url: str, params: Optional[dict] = None):
+    def _http_client(self) -> httpx.AsyncClient:
+        """长生命周期 HTTP 客户端（连接池复用），首次调用时懒创建。"""
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
+        return self._http
+
+    async def aclose(self) -> None:
+        """关闭底层 HTTP 连接池（由 main.py 的 lifespan 在会话结束时调用）。"""
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        params: Optional[dict] = None,
+        json_body: Optional[dict] = None,
+    ) -> httpx.Response:
+        """统一发送 HTTP 请求并校验状态码。
+
+        Raises:
+            ValueError: afc_token 未配置
+            RuntimeError: HTTP 状态码非 2xx（附带响应体摘要，便于定位后端错误）
+            httpx.HTTPError: 网络层错误（超时、连接失败等）
+        """
+        r = await self._http_client().request(
+            method, url, headers=self.headers(), params=params, json=json_body,
+        )
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300]
+            raise RuntimeError(
+                f"DevOps API 错误 HTTP {e.response.status_code} {method} {url}: {body}"
+            ) from e
+        return r
+
+    async def get(self, url: str, params: Optional[dict] = None) -> httpx.Response:
         """发送GET请求
 
         Args:
@@ -126,18 +166,10 @@ class DevOpsClient:
 
         Returns:
             响应对象
-
-        Raises:
-            httpx.HTTPError: If request fails
         """
-        # if not self._token:
-        #     await self.login()
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            r = await client.get(url, headers=self.headers(), params=params)
-            r.raise_for_status()
-            return r
+        return await self._request("GET", url, params=params)
 
-    async def post(self, url: str, data: dict):
+    async def post(self, url: str, data: dict) -> httpx.Response:
         """发送POST请求
 
         Args:
@@ -146,18 +178,10 @@ class DevOpsClient:
 
         Returns:
             响应对象
-
-        Raises:
-            httpx.HTTPError: If request fails
         """
-        # if not self._token:
-        #     await self.login()
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            r = await client.post(url, headers=self.headers(), json=data)
-            r.raise_for_status()
-            return r
+        return await self._request("POST", url, json_body=data)
 
-    async def put(self, url: str, data: dict):
+    async def put(self, url: str, data: dict) -> httpx.Response:
         """发送PUT请求
 
         Args:
@@ -166,16 +190,8 @@ class DevOpsClient:
 
         Returns:
             响应对象
-
-        Raises:
-            httpx.HTTPError: If request fails
         """
-        # if not self._token:
-        #     await self.login()
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            r = await client.put(url, headers=self.headers(), json=data)
-            r.raise_for_status()
-            return r
+        return await self._request("PUT", url, json_body=data)
 
     async def get_project(self) -> dict[str, Any]:
         """获取当前用户的所有项目
@@ -488,6 +504,11 @@ class DevOpsClient:
         r = await self.get(url, params={"projectId": self.project_id, "groupType": "testcase"})
         return r.json()
 
+    async def get_testcase_group_map(self) -> dict[str, str]:
+        """查询分组列表并转为 {groupId(str): groupName} 映射，供创建用例前的分组校验使用。"""
+        groups = await self.get_testcase_groups()
+        return {str(g.get("groupId")): g.get("groupName") for g in groups}
+
     async def create_testcase(
         self,
         case_title: str,
@@ -580,22 +601,23 @@ class DevOpsClient:
 
 
 
-    async def login(self) -> dict[str, Any]:
-        """登录devops平台并获取token
+    async def verify_token(self) -> dict[str, Any]:
+        """校验 afc_token 有效性并加载当前用户信息（缓存到 self._user_info）。
+
+        原名 login，实际并不换取新 token，故更名以匹配真实语义。
 
         Returns:
-            Login response with token and user info
+            当前用户信息
 
         Raises:
-            httpx.HTTPError: If login fails
+            ValueError: afc_token 未配置
+            RuntimeError / httpx.HTTPError: 请求失败或 token 无效
         """
         url = f"{self.base_url}/api/devops/uc/users/current-user"
-        headers={"Authorization":f"afc-token:{self.afc_token}"}
-        logger.info(f"开始校验token，url={url},headers={headers}")
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        # 注意：日志中不输出 Authorization 头，避免 token 泄漏
+        logger.info(f"开始校验token，url={url}")
+        r = await self.get(url)
+        data = r.json()
 
         if data:
             self._user_info = UserInfo(data["id"],data["employee"]["empName"],data["userName"],data["userName"])
