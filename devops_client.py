@@ -1,7 +1,14 @@
+import asyncio
 import httpx
 from typing import Optional, Any
 import logging
 REQUEST_TIMEOUT = 60
+
+# 对 DevOps API 的最大并发请求数。
+# 背景：MCP 客户端可能一次并发发起几十个工具调用（如批量创建工作项），
+# SDK 层会全部转成对后端的并发 HTTP 请求，易把后端打满导致请求排队超时
+# （客户端默认 60s 超时报 -32001）。此闸门使多余请求在本端排队而非压向后端。
+MAX_CONCURRENT_REQUESTS = 5
 
 workitem_type_map={
     "story":{
@@ -106,6 +113,8 @@ class DevOpsClient:
         self.version_id = version_id
         # 懒创建的长生命周期 HTTP 客户端（连接池复用），会话结束时由 aclose() 关闭
         self._http = None
+        # 出站请求并发闸门（见 MAX_CONCURRENT_REQUESTS 注释）
+        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
         # 由 verify_token() 填充
         self._user_info = None
         
@@ -145,9 +154,10 @@ class DevOpsClient:
             RuntimeError: HTTP 状态码非 2xx（附带响应体摘要，便于定位后端错误）
             httpx.HTTPError: 网络层错误（超时、连接失败等）
         """
-        r = await self._http_client().request(
-            method, url, headers=self.headers(), params=params, json=json_body,
-        )
+        async with self._semaphore:
+            r = await self._http_client().request(
+                method, url, headers=self.headers(), params=params, json=json_body,
+            )
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
