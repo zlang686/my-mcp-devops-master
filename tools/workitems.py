@@ -2,7 +2,7 @@
 import logging
 from typing import Annotated, Any, Dict, List, Optional, Union
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from pydantic import Field
 
 from server import get_client, mcp

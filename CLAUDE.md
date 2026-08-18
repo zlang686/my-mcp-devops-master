@@ -12,7 +12,7 @@ The codebase and DevOps API use Chinese terminology (e.g. 故事/任务/bug/风�
 
 - Python 3.13 (pinned in `.python-version`)
 - Package manager: **uv** (lockfile: `uv.lock`, project spec: `pyproject.toml`)
-- `mcp[cli]` — provides `FastMCP` server framework
+- `mcp[cli]>=2.0.0,<3` — provides the v2 `MCPServer` framework (`from mcp.server.mcpserver import MCPServer, Context`; `mcp.server.fastmcp` no longer exists). The SDK internally uses `httpx2`, which coexists with our own `httpx`
 - `httpx` — async HTTP client to the DevOps API
 - `python-dotenv` + dataclass — config loading from `.env`
 - `pydantic` — request models
@@ -35,24 +35,28 @@ Layered structure with strict separation between MCP layer and HTTP layer:
 
 ```
 main.py               → entry point: logging config, imports the tools package, mcp.run()
-server.py             → shared FastMCP instance, app_lifespan (per-session DevOpsClient),
-                       get_client(ctx), required/optional header-name constants
+server.py             → shared MCPServer instance (v2), module-level credential-keyed
+                       ClientRegistry (LRU) + get_client(ctx) facade reading ctx.headers;
+                       registers the permission middleware (one mcp.middleware.append line)
+permissions.py        → TOOL_PERMISSIONS mapping (12 tools) + permission_middleware:
+                       fail-closed access control, unmapped tools allowed
 tools/
   __init__.py         → imports domain modules to trigger @mcp.tool registration
   workitems.py        → work-item tools (list/create/details/comment/status-change)
   attachments.py      → attachment tools (preview/chunk/resource) + preview helpers
   testcases.py        → test-case tools (group & case create/query) + Step model helpers
 devops_client.py      → DevOps HTTP API wrapper; persistent httpx.AsyncClient + user info
+                       + permission cache (get_permissions, double-checked lock)
 config.py             → Config dataclass; loads DEVOPS_* vars from .env (legacy, not used at runtime)
 ```
 
-**Key flow:** tool functions live in `tools/*.py` and register onto the shared `mcp` instance (from `server.py`) at import time; `main.py` merely imports the `tools` package and starts the server. Each tool is a thin adapter that:
-1. Calls `get_client(ctx)` to obtain the session's `DevOpsClient`.
+**Key flow:** tool functions live in `tools/*.py` and register onto the shared `mcp` instance (from `server.py`) at import time; `main.py` merely imports the `tools` package and starts the server. Every `tools/call` first passes through `permissions.py::permission_middleware`: tools listed in `TOOL_PERMISSIONS` require the matching permission code fetched from `GET /api/devops/uc/permissions/employees?empId=&projectId=` (cached per `DevOpsClient`; `empId` is the **employee** id from current-user's `data["employee"]["empId"]`, not the top-level account `id` — the API rejects the latter with `EMPLOYEE_NOT_EXISTED`). Missing `X-DevOps-Project-ID`, an unreachable backend, or a failing permissions API all deny the call (fail-closed); unmapped tools pass through. Denials return normal (non-isError) tool output `{"error": ..., "required_permission": ...}` as JSON text. Each tool function is a thin adapter that:
+1. Calls `get_client(ctx)` to obtain a `DevOpsClient` from the registry.
 2. Calls the corresponding `DevOpsClient` method.
 3. Reshapes the raw API JSON into a smaller dict (renaming/filtering fields).
 4. Catches all exceptions and returns `{"error": "..."}` rather than raising — do not change this contract without reason, MCP clients depend on tool calls not throwing.
 
-**Authentication:** the MCP client injects configuration via HTTP headers (`X-DevOps-Base-URL`, `X-DevOps-afcToken`, optional `X-DevOps-{Project,Iteration,Module,Version}-ID`). On the first tool call of a session, `get_client` builds a `DevOpsClient` and validates the token via `verify_token()` (`GET /api/devops/uc/users/current-user`), caching a `UserInfo`. Client methods that read `self._user_info` rely on this session-level verification. `DevOpsClient` holds one long-lived `httpx.AsyncClient` (connection pooling); `app_lifespan` calls `aclose()` when the session ends.
+**Authentication:** the MCP client injects configuration via HTTP headers (`X-DevOps-Base-URL`, `X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). v2's lifespan is global (entered once at startup), so per-session clients were replaced by `ClientRegistry` in `server.py`: it keys on the 6-tuple of all header values, reusing an already-verified `DevOpsClient` (LRU maxsize 16; evicted clients get `aclose()`d; a global shutdown lifespan closes the rest). `verify_token()` (`GET /api/devops/uc/users/current-user`) caches a `UserInfo` that client methods read via `self._user_info`. Header lookups lowercase the incoming mapping first, so plain dicts with mixed-case keys also work.
 
 **Work-item type mapping** appears in two places and they are **not identical** — keep them in sync when changing types:
 - `devops_client.py` `workitem_type_map` — keyed by human-friendly names (`story`/`task`/`bug`/`risk`), used for **creating** items. Maps to `{workitemTypeId, workitemTypeName}`.
@@ -87,11 +91,15 @@ The four ID vars are baked into the `DevOpsClient` instance at startup and used 
 
 ## Transport
 
-Server runs with `transport="streamable-http"` (see `main.py::main`). There is no CLI/stdio transport configured.
+Server runs with `transport="streamable-http"` at `127.0.0.1:8001`, path `/mcp` (see `main.py::main`; v2 moved host/port/path into `run()` — the path parameter is `streamable_http_path`, not v1's `mcp_path`). There is no CLI/stdio transport configured. v2 serves both 2025-era (handshake) and 2026-07-28 (stateless) client generations; request bodies are capped at 4 MiB (the attachment chunk tool already paginates). OpenTelemetry middleware is enabled by default.
 
 ## Known Gotchas
 
 - `get_workitem_list` has a typo in its output dict (now lives in `tools/workitems.py`): `"prmoduleIdiority"` maps to `moduleId`. Preserve existing field names when modifying unless explicitly renaming across all consumers.
 - Error contract: list-returning tools (`get_workitem_list`, `get_testcase_groups`) return `{"error": ...}` (a dict) on failure instead of their normal list — do not reintroduce `[{"error": ...}]`.
+- Permission denials follow the same shape plus a code: `{"error": ..., "required_permission": ...}` returned as normal (non-isError) JSON-text tool output.
+- The v2 low-level `ServerMiddleware` API is officially **provisional** — it may change within 2.x. All touchpoints are confined to `permissions.py` plus one `mcp.middleware.append(...)` line in `server.py`; the dependency is pinned `<3`.
+- `X-DevOps-Project-ID` is a required header (the permissions API needs `projectId`); requests without it are rejected before any tool runs.
+- Header lookups lowercase the mapping first (HTTP headers arrive lowercase via Starlette); registry keys therefore match regardless of the incoming casing.
 - `client.get_project()` exists in `devops_client.py` but no MCP tool exposes it.
 - Tool registration happens at import time: a new `tools/` domain module must be imported in `tools/__init__.py`, otherwise its tools never register.

@@ -1,7 +1,7 @@
 """MCP 服务器入口：日志配置、导入工具包触发注册、启动服务。
 
 工具实现位于 tools/{workitems,attachments,testcases}.py，
-FastMCP 实例与会话管理位于 server.py。
+MCPServer 实例与凭据注册表位于 server.py，工具权限中间件位于 permissions.py。
 """
 import logging
 
@@ -16,7 +16,15 @@ logging.basicConfig(
 
 
 def main():
-    mcp.run(transport="streamable-http")
+    # v1 FastMCP 的 host/port/mcp_path 参数在 v2 MCPServer 中统一移到 run()，
+    # 路径参数名为 streamable_http_path；显式固定保持客户端连接 URL 不变
+    # （http://127.0.0.1:8000/mcp，与 v1 默认一致）
+    mcp.run(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=8001,
+        streamable_http_path="/mcp",
+    )
 
 
 if __name__ == "__main__":

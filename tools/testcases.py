@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from pydantic import BaseModel, TypeAdapter
 
 from server import get_client, mcp

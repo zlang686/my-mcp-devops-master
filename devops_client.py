@@ -117,7 +117,10 @@ class DevOpsClient:
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
         # 由 verify_token() 填充
         self._user_info = None
-        
+        # 权限码缓存（get_permissions 双检锁填充；None 表示未拉取）
+        self._permissions: frozenset[str] | None = None
+        self._perm_lock = asyncio.Lock()
+
 
     def headers(self) -> dict[str, str]:
         """构造认证请求头。afc_token 缺失时显式报错，避免静默发出无认证请求。"""
@@ -611,6 +614,33 @@ class DevOpsClient:
 
 
 
+    async def get_permissions(self) -> frozenset[str]:
+        """获取当前用户在当前项目下的权限码集合（双检锁缓存，仅拉取一次）。
+
+        调用 GET /api/devops/uc/permissions/employees?empId=&projectId=，
+        依赖 verify_token() 已填充的 _user_info.empId。
+
+        Returns:
+            权限码字符串的不可变集合
+
+        Raises:
+            RuntimeError: 权限接口返回格式异常（非字符串列表）
+        """
+        if self._permissions is not None:
+            return self._permissions
+        async with self._perm_lock:
+            if self._permissions is not None:
+                return self._permissions
+            r = await self.get(
+                f"{self.base_url}/api/devops/uc/permissions/employees",
+                params={"empId": self._user_info.empId, "projectId": self.project_id},
+            )
+            data = r.json()
+            if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+                raise RuntimeError(f"权限接口返回格式异常: {type(data).__name__}")
+            self._permissions = frozenset(data)
+            return self._permissions
+
     async def verify_token(self) -> dict[str, Any]:
         """校验 afc_token 有效性并加载当前用户信息（缓存到 self._user_info）。
 
@@ -630,7 +660,15 @@ class DevOpsClient:
         data = r.json()
 
         if data:
-            self._user_info = UserInfo(data["id"],data["employee"]["empName"],data["userName"],data["userName"])
+            # empId 语义（2026-08-18 实测）：权限接口 /uc/permissions/employees 需要
+            # 员工编号，对应 employee 子对象的 empId；顶层 data["id"] 是账号 ID，
+            # 用它查询会报 EMPLOYEE_NOT_EXISTED。
+            self._user_info = UserInfo(
+                data["employee"]["empId"],
+                data["employee"]["empName"],
+                data["userName"],
+                data["userName"],
+            )
         return data
 
 class UserInfo:

@@ -1,77 +1,145 @@
-"""MCP 服务器公共层：FastMCP 实例、会话生命周期、DevOpsClient 构造。
+"""MCP 服务器公共层：MCPServer 实例（mcp v2）、凭据键控的 DevOpsClient 全局注册表、权限中间件注册。
 
 各业务域工具模块（tools/）从本模块导入 mcp 与 get_client，
 通过 @mcp.tool 装饰器在 import 时完成注册；server.py 不依赖 tools/，无循环导入。
+
+mcp v2 的 lifespan 是全局的（startup 进入一次，不再按会话），
+原“每会话一个 DevOpsClient”改为模块级 ClientRegistry：
+按请求 headers 携带的凭据 6 元组键控复用，LRU 淘汰并关闭闲置连接，
+多用户/多凭据并发时互不串扰。
 """
 import asyncio
 import logging
+from collections import OrderedDict
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Mapping
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 from devops_client import DevOpsClient
 
 logger = logging.getLogger(__name__)
 
-# Header 名称定义：MCP 客户端连接时通过这些 headers 传递 DevOps 配置
+# Header 名称定义：MCP 客户端连接时通过这些 headers 传递 DevOps 配置。
+# HTTP 传输下 header 名以小写到达（Starlette Headers 大小写不敏感），查找统一用小写；
+# 报错信息中保留展示大小写。
 _REQUIRED_HEADERS = {
-    "base_url": "X-DevOps-Base-URL",
-    "afc_token": "X-DevOps-afcToken",
+    "base_url": ("x-devops-base-url", "X-DevOps-Base-URL"),
+    "afc_token": ("x-devops-afctoken", "X-DevOps-afcToken"),
+    "project_id": ("x-devops-project-id", "X-DevOps-Project-ID")
 }
 _OPTIONAL_HEADERS = {
-    "project_id": "X-DevOps-Project-ID",
-    "iteration_id": "X-DevOps-Iteration-ID",
-    "module_id": "X-DevOps-Module-ID",
-    "version_id": "X-DevOps-Version-ID",
+    "iteration_id": ("x-devops-iteration-id", "X-DevOps-Iteration-ID"),
+    "module_id": ("x-devops-module-id", "X-DevOps-Module-ID"),
+    "version_id": ("x-devops-version-id", "X-DevOps-Version-ID"),
 }
+
+
+class ClientRegistry:
+    """按凭据键控的 DevOpsClient 全局注册表（LRU）。
+
+    v2 无 per-session 清理时机，以 (base_url, afc_token, project_id,
+    iteration_id, module_id, version_id) 为键复用已验证的客户端；
+    超出容量淘汰最久未使用者并关闭其连接池。
+    """
+
+    def __init__(self, maxsize: int = 16):
+        self._clients: OrderedDict[tuple, DevOpsClient] = OrderedDict()
+        self._lock = asyncio.Lock()
+        self._maxsize = maxsize
+
+    async def get(self, headers: Mapping[str, str]) -> DevOpsClient:
+        """按 headers 中的凭据获取（必要时构造并验证）DevOpsClient。
+
+        Raises:
+            ValueError: 缺少必填 header（X-DevOps-Base-URL / X-DevOps-afcToken）
+            RuntimeError / httpx.HTTPError: token 校验失败（verify_token 抛出）
+        """
+        kwargs: dict[str, str] = {}
+        # 归一化为小写键：Starlette Headers 本身大小写不敏感（键为小写），
+        # 但普通 dict（测试/内部构造）可能携带大小写混合键，统一转换以兼容两者
+        normalized = {str(k).lower(): v for k, v in headers.items()}
+        for field, (lookup, display) in _REQUIRED_HEADERS.items():
+            value = normalized.get(lookup)
+            if not value:
+                raise ValueError(f"missing required header {display}")
+            kwargs[field] = value
+        for field, (lookup, _) in _OPTIONAL_HEADERS.items():
+            kwargs[field] = normalized.get(lookup, "")
+
+        key = (
+            kwargs["base_url"], kwargs["afc_token"], kwargs["project_id"],
+            kwargs["iteration_id"], kwargs["module_id"], kwargs["version_id"],
+        )
+
+        # 快路径：纯同步操作在 asyncio 中原子，无锁命中即返回
+        client = self._clients.get(key)
+        if client is not None:
+            self._clients.move_to_end(key)
+            return client
+
+        # 慢路径：双检锁避免并发首调重复构造/重复校验 token
+        async with self._lock:
+            client = self._clients.get(key)
+            if client is not None:
+                self._clients.move_to_end(key)
+                return client
+            client = DevOpsClient(**kwargs)
+            await client.verify_token()
+            self._clients[key] = client
+            logger.info(f"已构造 DevOpsClient（注册表当前 {len(self._clients)} 个）")
+            # 超额淘汰最久未使用的客户端并关闭其连接池
+            while len(self._clients) > self._maxsize:
+                _, evicted = self._clients.popitem(last=False)
+                try:
+                    await evicted.aclose()
+                except Exception:
+                    logger.exception("淘汰 DevOpsClient 时关闭连接池失败")
+            return client
+
+    async def aclose_all(self) -> None:
+        """关闭注册表内全部客户端的连接池（服务关停时调用）。"""
+        async with self._lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+        for client in clients:
+            try:
+                await client.aclose()
+            except Exception:
+                logger.exception("关闭 DevOpsClient 连接池失败")
+
+
+# 模块级单例：middleware 与工具层共用同一注册表
+_registry = ClientRegistry()
 
 
 async def get_client(ctx: Context) -> DevOpsClient:
-    """从会话上下文中获取（必要时构造）DevOpsClient。
+    """从请求上下文获取（必要时构造）DevOpsClient。
 
-    首次调用时从 HTTP headers 读取配置并构造客户端，缓存到 lifespan_context；
-    后续调用直接复用（含已校验的 afc_token 与用户信息）。
+    读取请求 HTTP headers 中的 DevOps 配置，经全局 ClientRegistry
+    按凭据复用已验证的客户端（含已校验的 afc_token 与用户信息）。
     """
-    lifespan_state = ctx.request_context.lifespan_context
-    # 已构造：直接返回（同会话复用，避免重复校验 token）
-    if lifespan_state.get("client") is not None:
-        return lifespan_state["client"]
-
-    # 并发保护：同会话内多工具并发首次调用时避免重复构造
-    async with lifespan_state["lock"]:
-        if lifespan_state.get("client") is not None:
-            return lifespan_state["client"]
-
-        headers = ctx.request_context.request.headers
-        kwargs: Dict[str, str] = {}
-        for field, header_name in _REQUIRED_HEADERS.items():
-            value = headers.get(header_name)
-            if not value:
-                raise ValueError(f"missing required header {header_name}")
-            kwargs[field] = value
-        for field, header_name in _OPTIONAL_HEADERS.items():
-            kwargs[field] = headers.get(header_name, "")
-
-        client = DevOpsClient(**kwargs)
-        await client.verify_token()
-        lifespan_state["client"] = client
-        return client
+    headers = ctx.headers
+    if headers is None:
+        raise ValueError("当前传输不携带 HTTP headers，无法获取 DevOps 配置")
+    return await _registry.get(headers)
 
 
-# 初始化 MCP 服务器
-# 每个客户端连接（mcp-session-id）对应一次 lifespan 进入/退出，
-# 在此处为每个会话懒构造独立的 DevOpsClient。
+# v2 lifespan 全局仅一次：借 shutdown 时机关闭注册表内全部连接池
 @asynccontextmanager
-async def app_lifespan(app: FastMCP):
-    # 会话结束时关闭 DevOpsClient 底层的 HTTP 连接池
-    state: Dict[str, Any] = {"client": None, "lock": asyncio.Lock()}
+async def _shutdown_lifespan(app: MCPServer):
     try:
-        yield state
+        yield {}
     finally:
-        client = state.get("client")
-        if client is not None:
-            await client.aclose()
+        await _registry.aclose_all()
 
 
-mcp: FastMCP = FastMCP("devops-mcp-master", lifespan=app_lifespan)
+# 初始化 MCP 服务器（mcp v2：MCPServer 取代 FastMCP）
+mcp: MCPServer = MCPServer("devops-mcp-master", lifespan=_shutdown_lifespan)
+
+# 注册工具权限中间件（v2 低层 middleware，官方标注 provisional）。
+# 置底导入：permissions.middleware 在函数体内延迟回导 _registry，此处在
+# _registry/mcp 就绪后完成注册，两个模块任意顺序导入均不成环。
+from permissions import permission_middleware  # noqa: E402
+
+mcp.middleware.append(permission_middleware)
