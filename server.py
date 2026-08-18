@@ -5,18 +5,20 @@
 
 mcp v2 的 lifespan 是全局的（startup 进入一次，不再按会话），
 原“每会话一个 DevOpsClient”改为模块级 ClientRegistry：
-按请求 headers 携带的凭据 6 元组键控复用，LRU 淘汰并关闭闲置连接，
-多用户/多凭据并发时互不串扰。
+传输层与状态层分离——全进程共享 1 个 httpx 连接池 + 1 个全局并发闸门
+（连接数/后端并发与用户数解耦），按凭据 6 元组只缓存轻量状态
+（配置、已验证的用户信息、权限码），LRU 仅限内存占用。
 """
 import asyncio
 import logging
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from typing import Mapping
+from typing import Mapping, Optional
 
+import httpx
 from mcp.server.mcpserver import Context, MCPServer
 
-from devops_client import DevOpsClient
+from devops_client import MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, DevOpsClient
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +38,36 @@ _OPTIONAL_HEADERS = {
 
 
 class ClientRegistry:
-    """按凭据键控的 DevOpsClient 全局注册表（LRU）。
+    """按凭据键控的 DevOpsClient 注册表 + 全进程共享传输层。
 
-    v2 无 per-session 清理时机，以 (base_url, afc_token, project_id,
-    iteration_id, module_id, version_id) 为键复用已验证的客户端；
-    超出容量淘汰最久未使用者并关闭其连接池。
+    传输/状态分离：
+    - 共享 1 个 httpx.AsyncClient 连接池（认证是每请求 header，连接与凭据无关）
+      与 1 个全局 Semaphore —— 无论多少用户，对后端的并发严格
+      ≤ MAX_CONCURRENT_REQUESTS，连接数不随用户数增长；
+    - 以 (base_url, afc_token, project_id, iteration_id, module_id, version_id)
+      为键缓存轻量状态（配置 + UserInfo + 权限码，每条仅几 KB），双检锁复用；
+    - LRU 上限只防内存增长：淘汰即丢弃（无连接可关），>上限用户不会引起
+      连接/权限接口抖动，仅其状态缓存需重建（重跑一次 verify + 权限拉取）。
     """
 
-    def __init__(self, maxsize: int = 16):
+    def __init__(self, maxsize: int = 256):
         self._clients: OrderedDict[tuple, DevOpsClient] = OrderedDict()
         self._lock = asyncio.Lock()
         self._maxsize = maxsize
+        # 共享传输层（懒创建，首个客户端构造时建立）
+        self._http: Optional[httpx.AsyncClient] = None
+        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+    def _transport(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
+        return self._http
 
     async def get(self, headers: Mapping[str, str]) -> DevOpsClient:
         """按 headers 中的凭据获取（必要时构造并验证）DevOpsClient。
 
         Raises:
-            ValueError: 缺少必填 header（X-DevOps-Base-URL / X-DevOps-afcToken）
+            ValueError: 缺少必填 header（X-DevOps-Base-URL / X-DevOps-afcToken / X-DevOps-Project-ID）
             RuntimeError / httpx.HTTPError: token 校验失败（verify_token 抛出）
         """
         kwargs: dict[str, str] = {}
@@ -84,29 +99,27 @@ class ClientRegistry:
             if client is not None:
                 self._clients.move_to_end(key)
                 return client
-            client = DevOpsClient(**kwargs)
+            client = DevOpsClient(
+                **kwargs, http_client=self._transport(), semaphore=self._semaphore,
+            )
             await client.verify_token()
             self._clients[key] = client
             logger.info(f"已构造 DevOpsClient（注册表当前 {len(self._clients)} 个）")
-            # 超额淘汰最久未使用的客户端并关闭其连接池
+            # 超额淘汰最久未使用者的状态缓存（共享连接池不受影响）
             while len(self._clients) > self._maxsize:
-                _, evicted = self._clients.popitem(last=False)
-                try:
-                    await evicted.aclose()
-                except Exception:
-                    logger.exception("淘汰 DevOpsClient 时关闭连接池失败")
+                self._clients.popitem(last=False)
             return client
 
     async def aclose_all(self) -> None:
-        """关闭注册表内全部客户端的连接池（服务关停时调用）。"""
+        """关闭共享连接池并清空状态缓存（服务关停时调用）。"""
         async with self._lock:
-            clients = list(self._clients.values())
             self._clients.clear()
-        for client in clients:
+            http, self._http = self._http, None
+        if http is not None:
             try:
-                await client.aclose()
+                await http.aclose()
             except Exception:
-                logger.exception("关闭 DevOpsClient 连接池失败")
+                logger.exception("关闭共享 HTTP 连接池失败")
 
 
 # 模块级单例：middleware 与工具层共用同一注册表
@@ -125,7 +138,7 @@ async def get_client(ctx: Context) -> DevOpsClient:
     return await _registry.get(headers)
 
 
-# v2 lifespan 全局仅一次：借 shutdown 时机关闭注册表内全部连接池
+# v2 lifespan 全局仅一次：借 shutdown 时机关闭共享连接池并清空凭据状态缓存
 @asynccontextmanager
 async def _shutdown_lifespan(app: MCPServer):
     try:

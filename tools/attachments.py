@@ -50,7 +50,7 @@ def preview_text(text: str) -> str:
     return preview
 
 
-@mcp.tool(description="预览文本类型附件（如日志、txt、json文件）的内容，返回文件的前200行或5000字符的预览")
+@mcp.tool(structured_output=False, description="预览文本类型附件（如日志、txt、json文件）的内容，返回文件的前200行或5000字符的预览")
 async def get_attachment_preview(ctx: Context, file_url: str, file_type: str) -> Dict[str, List[Dict[str, Any]]]:
     """预览文本类型附件（如日志、txt、json文件）"""
     logger.info(f"开始预览文件: {file_url}, 类型: {file_type}")
@@ -84,7 +84,7 @@ async def get_attachment_preview(ctx: Context, file_url: str, file_type: str) ->
         }
 
 
-@mcp.tool(description="读取文本类型附件的指定片段，支持设置偏移量和长度。仅支持文本类型文件（txt/log/json/xml/yaml/yml），非文本类型将被拒绝")
+@mcp.tool(structured_output=False, description="读取文本类型附件的指定片段，支持设置偏移量和长度。仅支持文本类型文件（txt/log/json/xml/yaml/yml），非文本类型将被拒绝")
 async def get_attachment_chunk(ctx: Context, file_url: str, file_type: str, offset: int = 0, length: int = 4000) -> Dict[str, List[Dict[str, Any]]]:
     """读取文本类型附件的指定片段"""
     logger.info(f"开始读取文件片段: {file_url}, 类型: {file_type}, 偏移: {offset}, 长度: {length}")
@@ -118,7 +118,7 @@ async def get_attachment_chunk(ctx: Context, file_url: str, file_type: str, offs
         }
 
 
-@mcp.tool(description="返回附件资源的URI和MIME类型，用于直接访问附件")
+@mcp.tool(structured_output=False, description="返回附件资源的URI和MIME类型，用于直接访问附件")
 async def get_attachment_resource(file_url: str, file_type: str) -> Dict[str, List[Dict[str, Any]]]:
     """返回附件资源URI和MIME类型"""
     logger.info(f"开始获取资源: {file_url}, 类型: {file_type}")

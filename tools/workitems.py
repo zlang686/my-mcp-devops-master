@@ -39,7 +39,7 @@ def format_time_estimate(seconds: Any) -> Optional[str]:
     return f"{rem_hours}h"
 
 
-@mcp.tool(description="""查询工作项列表，支持按工作项key、状态、类型筛选，返回工作项详细信息。
+@mcp.tool(structured_output=False, description="""查询工作项列表，支持按工作项key、状态、类型筛选，返回工作项详细信息。
 
 【参数格式】
 - workitem_status / workitem_type_id 均为逗号分隔的字符串，为空表示不筛选。
@@ -107,7 +107,7 @@ async def get_workitem_list(
         logger.error(f"获取工作项列表失败: {str(e)}")
         return {"error": f"获取工作项列表失败: {str(e)}"}
 
-@mcp.tool(description="""创建新的工作项。
+@mcp.tool(structured_output=False, description="""创建新的工作项。
 
 必填：title(标题)、description(描述)、priority(优先级)、workitem_type(工作项类型)、man_hour(评估工时，单位：小时)
 可选：parent_workitem_id(父工作项ID，为空表示根工作项)、due_time(截止日期，格式 YYYY-MM-DD)
@@ -153,7 +153,7 @@ async def create_workitem(
         logger.error(f"创建工作项失败: {str(e)}")
         return {"error": f"创建工作项失败: {str(e)}"}
 
-@mcp.tool(description="为指定工作项添加评论，需要提供项目ID、工作项ID和评论内容")
+@mcp.tool(structured_output=False, description="为指定工作项添加评论，需要提供项目ID、工作项ID和评论内容")
 async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, comment: str) -> Dict[str, Any]:
     """添加工作项评论"""
     logger.info(f"开始为工作项 {workitem_id} 添加评论")
@@ -167,7 +167,7 @@ async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, 
         logger.error(f"添加评论失败: {str(e)}")
         return {"error": f"添加评论失败: {str(e)}"}
 
-@mcp.tool(description="""变更指定工作项的状态，需要提供工作项ID和新的状态。
+@mcp.tool(structured_output=False, description="""变更指定工作项的状态，需要提供工作项ID和新的状态。
 
 服务端会先查询工作项的真实当前状态并校验转换是否合法，非法转换将返回错误及当前状态允许的目标状态列表。
 
@@ -227,7 +227,7 @@ async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status
         return {"error": f"变更工作项状态失败: {str(e)}"}
 
 
-@mcp.tool(description="根据工作项id获取指定工作项的详细信息，包括标题、状态、优先级、负责人、描述和附件元数据")
+@mcp.tool(structured_output=False, description="根据工作项id获取指定工作项的详细信息，包括标题、状态、优先级、负责人、描述和附件元数据")
 async def get_workitem_details(ctx: Context, workitem_id: str) -> Dict[str, Any]:
     """获取工作项详情和附件元数据"""
     logger.info(f"开始获取工作项 {workitem_id} 的详情")

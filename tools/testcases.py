@@ -36,7 +36,7 @@ def parse_operation_step(raw: Any) -> Any:
         return raw
 
 
-@mcp.tool(description="""创建测试用例分组。
+@mcp.tool(structured_output=False, description="""创建测试用例分组。
 
 必填：group_name(分组名称)
 可选：parent_group_id(父分组ID，为空表示根分组；父分组ID可通过 get_testcase_groups 查询)
@@ -55,7 +55,7 @@ async def create_testcase_group(ctx: Context, group_name: str, parent_group_id: 
         return {"error": f"创建测试用例分组失败: {str(e)}"}
 
 
-@mcp.tool(description="查询项目下的测试用例分组列表，返回分组树信息（含父分组ID、hasChild、子分组ID列表、用例数统计）。创建测试用例前可先调用本工具获取目标 group_id。")
+@mcp.tool(structured_output=False, description="查询项目下的测试用例分组列表，返回分组树信息（含父分组ID、hasChild、子分组ID列表、用例数统计）。创建测试用例前可先调用本工具获取目标 group_id。")
 async def get_testcase_groups(ctx: Context) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
     """查询测试用例分组列表"""
     logger.info("开始查询测试用例分组列表")
@@ -81,7 +81,7 @@ async def get_testcase_groups(ctx: Context) -> Union[List[Dict[str, Any]], Dict[
         return {"error": f"获取测试用例分组失败: {str(e)}"}
 
 
-@mcp.tool(description="""在指定分组下创建测试用例。
+@mcp.tool(structured_output=False, description="""在指定分组下创建测试用例。
 
 必填：case_title(用例标题)、steps(操作步骤列表)、group_id(所属分组ID，必须来自 get_testcase_groups 查询结果或 create_testcase_group 返回值；服务端会校验，无效时不创建并返回 available_groups 供选择或新建)
 可选：note(备注)、precondition(前置条件)、workitem_ids(关联工作项ID列表)、case_type(用例类型，默认 function)、default_priority(优先级，默认 P1)
@@ -137,7 +137,7 @@ async def create_testcase(
         return {"error": f"创建测试用例失败: {str(e)}"}
 
 
-@mcp.tool(description="""查询项目下的测试用例列表，返回用例详情（操作步骤已解析为结构化列表，便于阅读）。
+@mcp.tool(structured_output=False, description="""查询项目下的测试用例列表，返回用例详情（操作步骤已解析为结构化列表，便于阅读）。
 
 可选：group_id(分组ID筛选，为空查全项目)、page_index(页码，从0开始)、page_size(每页数量，默认200)
 返回 {"total": 总数, "cases": [用例列表]}。""")

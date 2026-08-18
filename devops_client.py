@@ -104,17 +104,30 @@ logger = logging.getLogger(__name__)
 
 class DevOpsClient:
 
-    def __init__(self, base_url: str,afc_token:str, project_id: str, iteration_id: str, module_id: str, version_id: str):
+    def __init__(
+        self,
+        base_url: str,
+        afc_token: str,
+        project_id: str,
+        iteration_id: str,
+        module_id: str,
+        version_id: str,
+        http_client: Optional[httpx.AsyncClient] = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
+    ):
         self.base_url = base_url
         self.afc_token=afc_token
         self.project_id = project_id
         self.iteration_id = iteration_id
         self.module_id = module_id
         self.version_id = version_id
-        # 懒创建的长生命周期 HTTP 客户端（连接池复用），会话结束时由 aclose() 关闭
-        self._http = None
-        # 出站请求并发闸门（见 MAX_CONCURRENT_REQUESTS 注释）
-        self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        # HTTP 连接池与并发闸门支持注入共享实例（多凭据共用一个池，连接数与用户数解耦）；
+        # 未注入时懒创建自有实例（独立使用场景），aclose 仅关闭自有实例
+        self._http = http_client
+        self._owns_http = http_client is None
+        # 出站请求并发闸门（见 MAX_CONCURRENT_REQUESTS 注释）；注入共享闸门时
+        # 限流语义升级为“全进程对后端总并发 ≤ MAX_CONCURRENT_REQUESTS”
+        self._semaphore = semaphore if semaphore is not None else asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
         # 由 verify_token() 填充
         self._user_info = None
         # 权限码缓存（get_permissions 双检锁填充；None 表示未拉取）
@@ -138,8 +151,8 @@ class DevOpsClient:
         return self._http
 
     async def aclose(self) -> None:
-        """关闭底层 HTTP 连接池（由 main.py 的 lifespan 在会话结束时调用）。"""
-        if self._http is not None:
+        """关闭底层 HTTP 连接池；共享注入的池不归本实例所有，不在此关闭。"""
+        if self._owns_http and self._http is not None:
             await self._http.aclose()
             self._http = None
 
