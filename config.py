@@ -1,4 +1,12 @@
-"""Configuration management for DevOps MCP service."""
+"""Configuration management for DevOps MCP service.
+
+服务端固定配置：目前仅 DevOps 后端地址（产品化决策——后端地址属于部署配置，
+不由 MCP 客户端指定）。本地开发读 .env（python-dotenv），产品部署注入进程
+环境变量；已存在的进程变量优先，load_dotenv 不会覆盖。
+
+历史上本模块还承载 username/password 与 4 个 ID 默认值（登录换 token 机制），
+该机制已被 per-request afc_token header 取代，相关字段已删除。
+"""
 
 import os
 from dataclasses import dataclass
@@ -10,30 +18,18 @@ class Config:
     """Configuration for DevOps MCP service."""
 
     base_url: str
-    username: str
-    password: str
-    project_id: str
-    iteration_id: str
-    module_id: str
-    version_id: str
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Load configuration from environment variables."""
+        """Load base_url from DEVOPS_BASE_URL (env var or .env)."""
         load_dotenv()
 
-        base_url = os.getenv("DEVOPS_BASE_URL", "")
-        username = os.getenv("DEVOPS_USERNAME", "")
-        password = os.getenv("DEVOPS_PASSWORD", "")
-        project_id = os.getenv("DEVOPS_PROJECT_ID", "")
-        iteration_id = os.getenv("DEVOPS_ITERATION_ID", "")
-        module_id = os.getenv("DEVOPS_MODULE_ID", "")
-        version_id = os.getenv("DEVOPS_VERSION_ID", "")
+        base_url = os.getenv("DEVOPS_BASE_URL", "").strip().rstrip("/")
 
-        if not all([base_url, username, password]):
+        if not base_url:
             raise ValueError(
-                "Missing required environment variables. "
-                "Please set DEVOPS_BASE_URL, DEVOPS_USERNAME, and DEVOPS_PASSWORD."
+                "DEVOPS_BASE_URL 未配置：服务端必须固定 DevOps 后端地址"
+                "（一实例一后端），请在环境变量或 .env 中设置。"
             )
 
-        return cls(base_url=base_url, username=username, password=password, project_id=project_id, iteration_id=iteration_id, module_id=module_id, version_id=version_id)
+        return cls(base_url=base_url)
