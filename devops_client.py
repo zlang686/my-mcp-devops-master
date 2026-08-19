@@ -307,6 +307,18 @@ class DevOpsClient:
         r.encoding = "utf-8"
         return r.text
 
+    async def download_binary(self, url: str) -> bytes:
+        """下载二进制文件（图片附件等）
+
+        Args:
+            url: 文件url（工作项详情 attachments 数组里的 fileUrl 直链）
+
+        Returns:
+            文件原始字节
+        """
+        r = await self.get(url)
+        return r.content
+
     async def create_workitem(
         self,
         title: str,
