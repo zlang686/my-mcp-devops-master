@@ -1,9 +1,11 @@
-"""附件域工具：文本附件预览、片段读取、资源 URI。"""
+"""附件域工具：文本附件预览、片段读取、资源 URI、图片附件读取。"""
+import base64
+import json
 import logging
-from typing import Annotated, Any, Dict, List
+from typing import Any, Dict, List
 
+import mcp_types
 from mcp.server.mcpserver import Context
-from pydantic import Field
 
 from server import get_client, mcp
 
@@ -16,12 +18,19 @@ MAX_PREVIEW_CHARS: int = 5000  # 预览文件的最大字符数
 # 文本文件类型集合
 TEXT_TYPES: set = {"txt", "log", "json", "xml", "yaml", "yml"}
 
+# 图片文件类型集合（对齐多模态模型支持的图片格式；bmp 等不支持，不收）
+IMAGE_TYPES: set = {"png", "jpg", "jpeg", "gif", "webp"}
+
+# 图片大小上限：超过拒绝返回不压缩（5MB base64 后约 6.7MB，接近模型单图上限）
+MAX_IMAGE_BYTES: int = 5 * 1024 * 1024
+
 # MIME类型映射
 MIME_MAP: Dict[str, str] = {
     "png": "image/png",
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "gif": "image/gif",
+    "webp": "image/webp",
     "zip": "application/zip",
     "txt": "text/plain",
     "log": "text/plain",
@@ -132,3 +141,51 @@ async def get_attachment_resource(file_url: str, file_type: str) -> Dict[str, Li
             }
         }]
     }
+
+
+@mcp.tool(structured_output=False, description="下载图片类型附件并以图片内容返回，多模态客户端可直接查看。仅支持 png/jpg/jpeg/gif/webp 且不超过 5MB；file_url 与 file_type 取自 get_workitem_details 返回的 attachments 数组（fileUrl/fileType 字段）")
+async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> list | dict:
+    """下载图片附件，返回 [元信息文本块, 图片块]；失败返回 {"error": ...}"""
+    logger.info(f"开始下载图片附件: {file_url}, 类型: {file_type}")
+    try:
+        if file_type.lower() not in IMAGE_TYPES:
+            logger.info(f"非图片类型: {file_type}，拒绝下载")
+            return {
+                "error": f"仅支持图片类型附件（png/jpg/jpeg/gif/webp），当前 file_type={file_type}",
+                "supported_types": sorted(IMAGE_TYPES),
+            }
+
+        client = await get_client(ctx)
+        data = await client.download_binary(file_url)
+
+        if len(data) > MAX_IMAGE_BYTES:
+            logger.info(f"图片过大: {len(data)} 字节，超过上限 {MAX_IMAGE_BYTES}")
+            return {
+                "error": f"图片过大（{len(data)} 字节），超过上限 5MB，请手动下载查看",
+                "file_size": len(data),
+                "max_bytes": MAX_IMAGE_BYTES,
+            }
+
+        mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
+        b64 = base64.b64encode(data).decode("ascii")
+        logger.info(f"图片附件下载成功: {len(data)} 字节, mime={mime}")
+        # SDK _convert_to_content 对 ContentBlock 列表逐块透传（func_metadata.py:563-569），
+        # 配合 structured_output=False 直接产出 CallToolResult(content=[文本块, 图片块])
+        return [
+            mcp_types.TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "file_url": file_url,
+                        "file_type": file_type.lower(),
+                        "mime_type": mime,
+                        "file_size": len(data),
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            mcp_types.ImageContent(type="image", data=b64, mime_type=mime),
+        ]
+    except Exception as e:
+        logger.error(f"下载图片附件失败: {str(e)}")
+        return {"error": f"下载图片附件失败: {str(e)}"}
