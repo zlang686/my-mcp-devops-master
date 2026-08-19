@@ -75,7 +75,7 @@ async def get_workitem_list(
     workitem_type_id: Annotated[str, Field(description="类型ID筛选，逗号分隔，取值见工具说明，为空不过滤")] = "",
     offset: Annotated[int, Field(description="分页偏移，默认0")] = 0,
     limit: Annotated[int, Field(description="每页数量，默认20")] = 20,
-) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+) -> Dict[str, Any]:
     """查询项目下的当前用户相关的工作项"""
     logger.info(f"开始查询工作项，状态: {workitem_status}, 偏移: {offset}, 限制: {limit}")
     try:
@@ -87,10 +87,12 @@ async def get_workitem_list(
                 "workitemId":workitem.get("workitemId"),
                 "workitemKey":workitem.get("workitemKey"),
                 "iterationId":workitem.get("iterationId"),
+                "iterationName":workitem.get("iterationName"),
                 "versionId":workitem.get("versionId"),
-                "prmoduleIdiority":workitem.get("moduleId"),
+                "versionName":workitem.get("versionName"),
+                "moduleId":workitem.get("moduleId"),
                 "title":workitem.get("title"),
-                "description":workitem.get("description"),
+                # "description":workitem.get("description"),
                 "priority":workitem.get("priority"),
                 "workitemStatus":workitem.get("workitemStatus"),
                 "workitemStatusName":workitem.get("workitemStatusName"),
@@ -100,9 +102,18 @@ async def get_workitem_list(
                 "createTime":workitem.get("createTime"),
                 "dueTime":workitem.get("dueTime"),
                 "timeEstimate":format_time_estimate(workitem.get("timeEstimate")),
+                "bugLevel":workitem.get("bugLevel"),
+                "parentWorkitemId":workitem.get("parentWorkitemId"),
             })
         logger.info(f"成功获取 {len(workitems)} 个工作项")
-        return workitems
+        # 单块返回整个 JSON 数组：SDK 会把 list 拍平成每元素一个 TextContent 块，
+        # 多块形态下部分模型/客户端只读首块（实测丢失除第一条外的全部数据）
+        return {
+            "total":data.get("total"),
+            "offset":data.get("pageIndex"),
+            "limit":data.get("pageSize"),
+            "items":workitems
+        }
     except Exception as e:
         logger.error(f"获取工作项列表失败: {str(e)}")
         return {"error": f"获取工作项列表失败: {str(e)}"}
@@ -153,7 +164,10 @@ async def create_workitem(
         logger.error(f"创建工作项失败: {str(e)}")
         return {"error": f"创建工作项失败: {str(e)}"}
 
-@mcp.tool(structured_output=False, description="为指定工作项添加评论，需要提供项目ID、工作项ID和评论内容")
+@mcp.tool(structured_output=False, description="""为指定工作项添加评论，需要提供项目ID、工作项ID和评论内容。
+【comment text文本格式】
+评论内容字段仅支持text纯文本格式
+""")
 async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, comment: str) -> Dict[str, Any]:
     """添加工作项评论"""
     logger.info(f"开始为工作项 {workitem_id} 添加评论")

@@ -47,7 +47,7 @@ def _deny(reason: str, required_permission: str) -> mcp_types.CallToolResult:
     """构造拒绝结果：正常工具输出（非 isError）的 JSON 文本，与工具层错误契约一致。"""
     payload = {"error": reason, "required_permission": required_permission}
     return mcp_types.CallToolResult(
-        content=[mcp_types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
+        is_error=True,content=[mcp_types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))]
     )
 
 

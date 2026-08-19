@@ -274,7 +274,8 @@ class DevOpsClient:
         "noDueDate":None,
         "params":{"offset":offset,"limit":limit}
         }
-        url = f"{self.base_url}/api/devops/pm/workitems/actions/query"
+        # devops的分页参数是在query参数里
+        url = f"{self.base_url}/api/devops/pm/workitems/actions/query?pageIndex={offset}&pageSize={limit}"
         r = await self.post(url,data=payload)
         return r.json()
 
@@ -418,8 +419,11 @@ class DevOpsClient:
 
         """
         payload={
-            "projectId":project_id,
-            "comment":comment
+            "workitemComment":{
+                "projectId": project_id,
+                "workitemId":workitem_id,
+                "commentContent":comment
+            }
         }
         url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}/workitem-comments"
         r = await self.post(url,payload)

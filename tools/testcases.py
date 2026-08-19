@@ -56,7 +56,7 @@ async def create_testcase_group(ctx: Context, group_name: str, parent_group_id: 
 
 
 @mcp.tool(structured_output=False, description="查询项目下的测试用例分组列表，返回分组树信息（含父分组ID、hasChild、子分组ID列表、用例数统计）。创建测试用例前可先调用本工具获取目标 group_id。")
-async def get_testcase_groups(ctx: Context) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+async def get_testcase_groups(ctx: Context) -> Dict[str, Any]:
     """查询测试用例分组列表"""
     logger.info("开始查询测试用例分组列表")
     try:
@@ -75,7 +75,11 @@ async def get_testcase_groups(ctx: Context) -> Union[List[Dict[str, Any]], Dict[
                 "createTime": g.get("createTime"),
             })
         logger.info(f"成功获取 {len(groups)} 个测试用例分组")
-        return groups
+        # 单块返回整个 JSON 数组：SDK 会把 list 拍平成每元素一个 TextContent 块，
+        # 多块形态下部分模型/客户端只读首块（实测丢失除第一条外的全部数据）
+        return {
+            "total": len(data),"groups": groups,
+        }
     except Exception as e:
         logger.error(f"获取测试用例分组失败: {str(e)}")
         return {"error": f"获取测试用例分组失败: {str(e)}"}
