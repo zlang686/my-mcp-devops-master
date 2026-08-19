@@ -47,7 +47,9 @@ tools/
   testcases.py        → test-case tools (group & case create/query) + Step model helpers
 devops_client.py      → DevOps HTTP API wrapper; persistent httpx.AsyncClient + user info
                        + permission cache (get_permissions, double-checked lock)
-config.py             → Config dataclass; loads DEVOPS_* vars from .env (legacy, not used at runtime)
+config.py             → Config dataclass; loads server-side DEVOPS_BASE_URL from .env /
+                       process env (required; missing → ValueError at import, process
+                       refuses to start — fail-fast)
 ```
 
 **Key flow:** tool functions live in `tools/*.py` and register onto the shared `mcp` instance (from `server.py`) at import time; `main.py` merely imports the `tools` package and starts the server. Every `tools/call` first passes through `permissions.py::permission_middleware`: tools listed in `TOOL_PERMISSIONS` require the matching permission code fetched from `GET /api/devops/uc/permissions/employees?empId=&projectId=` (cached per `DevOpsClient`; `empId` is the **employee** id from current-user's `data["employee"]["empId"]`, not the top-level account `id` — the API rejects the latter with `EMPLOYEE_NOT_EXISTED`). Missing `X-DevOps-Project-ID`, an unreachable backend, or a failing permissions API all deny the call (fail-closed); unmapped tools pass through. Denials return normal (non-isError) tool output `{"error": ..., "required_permission": ...}` as JSON text. Each tool function is a thin adapter that:
@@ -56,7 +58,7 @@ config.py             → Config dataclass; loads DEVOPS_* vars from .env (legac
 3. Reshapes the raw API JSON into a smaller dict (renaming/filtering fields).
 4. Catches all exceptions and returns `{"error": "..."}` rather than raising — do not change this contract without reason, MCP clients depend on tool calls not throwing.
 
-**Authentication:** the MCP client injects configuration via HTTP headers (`X-DevOps-Base-URL`, `X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). v2's lifespan is global (entered once at startup), so per-session clients were replaced by `ClientRegistry` in `server.py`, which separates transport from state: **one shared `httpx.AsyncClient` pool and one global `Semaphore`** serve all users (auth is per-request headers, so connections are credential-agnostic — backend concurrency stays ≤ `MAX_CONCURRENT_REQUESTS` no matter how many users), while the 6-tuple of header values keys a lightweight state cache (`UserInfo` + permission codes, a few KB each; LRU maxsize 256, eviction just drops the entry). `verify_token()` (`GET /api/devops/uc/users/current-user`) caches a `UserInfo` that client methods read via `self._user_info`. Header lookups lowercase the incoming mapping first, so plain dicts with mixed-case keys also work. A global shutdown lifespan closes the shared pool.
+**Authentication:** the MCP client injects credentials via HTTP headers (`X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). The backend address is **server-side**: `DEVOPS_BASE_URL` env var (loaded by `config.py::Config.from_env` — `.env` for local dev, process env for deployment; one instance serves one backend). A client-sent legacy `X-DevOps-Base-URL` differing from the server config is rejected by `ClientRegistry.get` (prevents stale client configs silently writing to the wrong backend); matching or absent values pass. v2's lifespan is global (entered once at startup), so per-session clients were replaced by `ClientRegistry` in `server.py`, which separates transport from state: **one shared `httpx.AsyncClient` pool and one global `Semaphore`** serve all users (auth is per-request headers, so connections are credential-agnostic — backend concurrency stays ≤ `MAX_CONCURRENT_REQUESTS` no matter how many users), while the 5-tuple of credential header values keys a lightweight state cache (`UserInfo` + permission codes, a few KB each; LRU maxsize 256, eviction just drops the entry). `verify_token()` (`GET /api/devops/uc/users/current-user`) caches a `UserInfo` that client methods read via `self._user_info`. Header lookups lowercase the incoming mapping first, so plain dicts with mixed-case keys also work. A global shutdown lifespan closes the shared pool.
 
 **Work-item type mapping** appears in two places and they are **not identical** — keep them in sync when changing types:
 - `devops_client.py` `workitem_type_map` — keyed by human-friendly names (`story`/`task`/`bug`/`risk`), used for **creating** items. Maps to `{workitemTypeId, workitemTypeName}`.
@@ -76,22 +78,17 @@ IDs: `2`=故事/user-story, `3`=任务/task, `4`=bug, `5`=风险/risk.
 
 ## Configuration & Environment
 
-Required environment variables (loaded by `Config.from_env` in `config.py`). Copy `.env.example` style — the `.env` file in this repo contains real credentials and is **not** gitignored (verify before committing). `Config.from_env` raises `ValueError` if `DEVOPS_BASE_URL`, `DEVOPS_USERNAME`, or `DEVOPS_PASSWORD` are missing; the four ID vars default to empty string.
+Server-side configuration (`config.py::Config.from_env`, loads `.env` via python-dotenv; existing process env vars take precedence):
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `DEVOPS_BASE_URL` | DevOps instance root (e.g. `http://localhost:14080`) | yes |
-| `DEVOPS_USERNAME` / `DEVOPS_PASSWORD` | Login credentials for `/api/uc/users/login` | yes |
-| `DEVOPS_PROJECT_ID` | Default project for new work items | no |
-| `DEVOPS_ITERATION_ID` | Default iteration (sprint) for new work items | no |
-| `DEVOPS_MODULE_ID` | Default module for new work items | no |
-| `DEVOPS_VERSION_ID` | Default version for new work items | no |
+| `DEVOPS_BASE_URL` | DevOps instance root (e.g. `http://localhost:14080`); one instance serves one backend — whitespace and trailing `/` are normalized | yes |
 
-The four ID vars are baked into the `DevOpsClient` instance at startup and used as defaults inside `create_workitem` / `create_testcases`. They are **not** per-call parameters — changing them requires editing `.env` and restarting the server.
+Everything else is per-request via MCP client HTTP headers (`X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). The historical `DEVOPS_USERNAME`/`DEVOPS_PASSWORD`/4-ID-vars mechanism is removed — the `.env` may still contain stale copies (`.env` holds real credentials and is **not** gitignored; verify before committing; see `.env.example`). A missing `DEVOPS_BASE_URL` raises `ValueError` at import → the process refuses to start (fail-fast).
 
 ## Transport
 
-Server runs with `transport="streamable-http"` at `127.0.0.1:8001`, path `/mcp` (see `main.py::main`; v2 moved host/port/path into `run()` — the path parameter is `streamable_http_path`, not v1's `mcp_path`). There is no CLI/stdio transport configured. v2 serves both 2025-era (handshake) and 2026-07-28 (stateless) client generations; request bodies are capped at 4 MiB (the attachment chunk tool already paginates). OpenTelemetry middleware is enabled by default.
+Server runs with `transport="streamable-http"` at `127.0.0.1:8000`, path `/mcp` (see `main.py::main`; v2 moved host/port/path into `run()` — the path parameter is `streamable_http_path`, not v1's `mcp_path`). There is no CLI/stdio transport configured. v2 serves both 2025-era (handshake) and 2026-07-28 (stateless) client generations; request bodies are capped at 4 MiB (the attachment chunk tool already paginates). OpenTelemetry middleware is enabled by default.
 
 ## Known Gotchas
 
@@ -105,3 +102,4 @@ Server runs with `transport="streamable-http"` at `127.0.0.1:8001`, path `/mcp` 
 - List-returning tools serialize as **one TextContent block per element** (SDK's `_convert_to_content` flattens lists — same as v1), not a single JSON-array block.
 - `client.get_project()` exists in `devops_client.py` but no MCP tool exposes it.
 - Tool registration happens at import time: a new `tools/` domain module must be imported in `tools/__init__.py`, otherwise its tools never register.
+- A client-sent legacy `X-DevOps-Base-URL` is consistency-checked in `ClientRegistry.get`: mismatch with server `DEVOPS_BASE_URL` → `ValueError` surfaced as the standard denial/error JSON (prevents stale client configs silently hitting the wrong backend); matching or absent passes.
