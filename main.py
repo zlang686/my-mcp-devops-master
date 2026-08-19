@@ -5,7 +5,7 @@ MCPServer 实例与凭据注册表位于 server.py，工具权限中间件位于
 """
 import logging
 
-import tools  # noqa: F401  导入即注册 12 个 @mcp.tool 工具
+import tools  # noqa: F401  导入即注册 13 个 @mcp.tool 工具
 from server import mcp
 
 # 配置日志（入口统一配置，各模块仅 getLogger）

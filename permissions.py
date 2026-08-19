@@ -1,4 +1,4 @@
-"""工具权限中间件：按当前用户权限码控制 12 个 MCP 工具的访问。
+"""工具权限中间件：按当前用户权限码控制 13 个 MCP 工具的访问。
 
 拦截 tools/call 请求，从请求 HTTP headers 构造/复用 DevOpsClient，
 调用 GET /api/devops/uc/permissions/employees 拉取当前用户权限码列表，
@@ -35,6 +35,7 @@ TOOL_PERMISSIONS: dict[str, str] = {
     "get_attachment_preview": "project_kanban_workitem_process",
     "get_attachment_chunk": "project_kanban_workitem_process",
     "get_attachment_resource": "project_kanban_workitem_process",
+    "get_attachment_image": "project_kanban_workitem_process",
     # 测试用例
     "create_testcase_group": "project_testcase_create",
     "get_testcase_groups": "project_testcase_create",
