@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import mcp_types
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import Image
 
 from server import get_client, mcp
 
@@ -127,25 +128,25 @@ async def get_attachment_chunk(ctx: Context, file_url: str, file_type: str, offs
         }
 
 
-@mcp.tool(structured_output=False, description="返回附件资源的URI和MIME类型，用于直接访问附件")
-async def get_attachment_resource(file_url: str, file_type: str) -> Dict[str, List[Dict[str, Any]]]:
-    """返回附件资源URI和MIME类型"""
-    logger.info(f"开始获取资源: {file_url}, 类型: {file_type}")
-    mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
-    return {
-        "contents": [{
-            "type": "resource",
-            "resource": {
-                "uri": file_url,
-                "mimeType": mime
-            }
-        }]
-    }
+# @mcp.tool(structured_output=False, description="返回附件资源的URI和MIME类型，用于直接访问附件")
+# async def get_attachment_resource(file_url: str, file_type: str) -> Dict[str, List[Dict[str, Any]]]:
+#     """返回附件资源URI和MIME类型"""
+#     logger.info(f"开始获取资源: {file_url}, 类型: {file_type}")
+#     mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
+#     return {
+#         "contents": [{
+#             "type": "resource",
+#             "resource": {
+#                 "uri": file_url,
+#                 "mimeType": mime
+#             }
+#         }]
+#     }
 
 
 @mcp.tool(structured_output=False, description="下载图片类型附件并以图片内容返回，多模态客户端可直接查看。仅支持 png/jpg/jpeg/gif/webp 且不超过 5MB；file_url 与 file_type 取自 get_workitem_details 返回的 attachments 数组（fileUrl/fileType 字段）")
-async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> list | dict:
-    """下载图片附件，返回 [元信息文本块, 图片块]；失败返回 {"error": ...}"""
+async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> Image | dict:
+    """下载图片附件，返回 Image 对象；失败返回 {"error": ...}"""
     logger.info(f"开始下载图片附件: {file_url}, 类型: {file_type}")
     try:
         if file_type.lower() not in IMAGE_TYPES:
@@ -154,6 +155,8 @@ async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> l
                 "error": f"仅支持图片类型附件（png/jpg/jpeg/gif/webp），当前 file_type={file_type}",
                 "supported_types": sorted(IMAGE_TYPES),
             }
+        if file_type.lower() == "jpg":
+            file_type="jpeg"
 
         client = await get_client(ctx)
         data = await client.download_binary(file_url)
@@ -166,26 +169,12 @@ async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> l
                 "max_bytes": MAX_IMAGE_BYTES,
             }
 
-        mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
-        b64 = base64.b64encode(data).decode("ascii")
-        logger.info(f"图片附件下载成功: {len(data)} 字节, mime={mime}")
+        # mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
+        # b64 = base64.b64encode(data).decode("ascii")
+        logger.info(f"图片附件下载成功: {len(data)} 字节, type={file_type}")
         # SDK _convert_to_content 对 ContentBlock 列表逐块透传（func_metadata.py:563-569），
         # 配合 structured_output=False 直接产出 CallToolResult(content=[文本块, 图片块])
-        return [
-            mcp_types.TextContent(
-                type="text",
-                text=json.dumps(
-                    {
-                        "file_url": file_url,
-                        "file_type": file_type.lower(),
-                        "mime_type": mime,
-                        "file_size": len(data),
-                    },
-                    ensure_ascii=False,
-                ),
-            ),
-            mcp_types.ImageContent(type="image", data=b64, mime_type=mime),
-        ]
+        return Image(data=data, format=file_type)
     except Exception as e:
         logger.error(f"下载图片附件失败: {str(e)}")
         return {"error": f"下载图片附件失败: {str(e)}"}
