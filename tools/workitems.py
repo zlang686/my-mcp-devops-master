@@ -52,10 +52,10 @@ def format_time_estimate(seconds: Any) -> Optional[str]:
   5 = 风险(risk)
 
 【工作项状态 workitem_status 取值（不同类型支持的状态不同）】
-  [bug 4]    open=待解决, in-progress=处理中, to-be-tested=待测试, testing=测试中, verified=验证通过, reopened=重新打开, closed=已关闭
-  [风险 5]   open=待解决, in-progress=处理中, resolved=已解决, reopened=重新打开, closed=已关闭
-  [故事 2]   open=待开发, developing=开发中, to-be-tested=待测试, testing=测试中, verified=验证通过, released=已发布
-  [任务 3]   to-do=待办, in-progress=处理中, done=完成
+  [bug 4]    open=待解决, in-progress=处理中, resolved=已解决, to-be-tested=待测试, testing=测试中, verified=验证通过, reopened=重新打开, closed=已关闭
+  [风险 5]   open=待解决, in-progress=处理中, resolved=已解决, canceled=已取消, reopened=重新打开, closed=已关闭
+  [故事 2]   open=待开发, in-progress=处理中, developing=开发中, resolved=已解决, to-be-tested=待测试, testing=测试中, verified=验证通过, reopened=重新打开, released=已发布
+  [任务 3]   to-do=待办, open=待解决, in-progress=处理中, resolved=已解决, verified=验证通过, done=完成, reopened=重新打开, closed=已关闭
 
 【关键规则】同一中文状态在不同类型下可能对应不同英文值，需按用户查询的类型把对应英文值取并集后传入。
   例如"处理中"：对 bug/任务/风险 → in-progress；对故事 → developing(开发中)。若用户同时查 bug 和故事，应传入 "in-progress,developing"。
@@ -180,59 +180,62 @@ async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, 
     except Exception as e:
         logger.error(f"添加评论失败: {str(e)}")
         return {"error": f"添加评论失败: {str(e)}"}
+@mcp.tool(structured_output=False, description="""查询指定工作项在当前状态下允许变更的下一步状态列表（以 DevOps 平台配置为准，动态获取）。
+
+【返回结构】
+  {"workitemId", "currentStatus"(当前状态英文值), "toStatusList": [{"toStatus"(目标状态英文值), "toStatusName"(转换中文名)}]}
+  toStatusList 为空表示当前状态没有可变更的下一步状态（可能已是终态）。
+
+【用途】变更工作项状态（change_workitem_status）前必须先调用本工具：
+1. 用工作项ID查询该工作项当前状态下所有合法的目标状态；
+2. 按 toStatusName 的中文名理解各选项含义（如"开始处理"、"关闭"等平台配置的转换），选出符合意图的一项，将其 toStatus 英文值传给 change_workitem_status 的 workitem_status 参数（不要传中文名）；
+3. 不要凭空猜测状态值——转换规则由平台配置决定，不同项目/类型的状态集合和转换名都可能不同。
+""")
+async def get_next_workitem_status_list(ctx: Context,workitem_id:str) -> Dict[str, Any]:
+    """查询工作项下一步可变更状态列表"""
+    logger.info(f"开始查询工作项: {workitem_id}的下一步可变更的状态")
+    try:
+        client = await get_client(ctx)
+        data=await client.get_next_workitem_status_list(workitem_id)
+        # 防御：后端响应形状变化时显式报错，避免静默解析出错误结果
+        if not isinstance(data, list):
+            logger.error(f"工作项 {workitem_id} 的可变更状态接口响应形状异常: {type(data).__name__}")
+            return {"error": f"接口响应形状异常（期望列表，实际 {type(data).__name__}），接口可能已变化"}
+        # 空列表是合法情况：当前状态无任何可转换目标（终态），正常返回供调用方判断
+        if not data:
+            return {
+                "workitemId": workitem_id,
+                "currentStatus": None,
+                "toStatusList": [],
+                "note": "当前状态没有可变更的下一步状态（可能已是终态）",
+            }
+        next_workitem_status = []
+        for next_status in data:
+            next_workitem_status.append({
+                "toStatus": next_status.get("toStatus"),
+                "toStatusName": next_status.get("transitionName"),
+            })
+        return {
+            "workitemId": workitem_id,
+            "currentStatus": data[0].get("workitemStatus"),
+            "toStatusList": next_workitem_status
+        }
+    except Exception as e:
+        logger.error(f"查询下一步可变更状态失败: {str(e)}")
+        return {"error": f"查询下一步可变更状态失败: {str(e)}"}
 
 @mcp.tool(structured_output=False, description="""变更指定工作项的状态，需要提供工作项ID和新的状态。
 
-服务端会先查询工作项的真实当前状态并校验转换是否合法，非法转换将返回错误及当前状态允许的目标状态列表。
-
-【工作项类型与状态转换规则】（必须遵守，仅下列转换合法）
-  bug（工作项类型ID=4）:
-    closed(已关闭)      -> reopened(重新打开)
-    in-progress(处理中) -> closed(关闭), open(转为待办), to-be-tested(解决完成)
-    open(待解决)        -> closed(关闭), in-progress(处理中), to-be-tested(解决完成)
-    reopened(重新打开)  -> closed(关闭), in-progress(处理中)
-    testing(测试中)     -> closed(关闭), reopened(打回), verified(验证通过)
-    to-be-tested(待测试)-> closed(关闭), reopened(打回), testing(开始测试)
-    verified(验证通过)  -> closed(关闭)
-
-  风险（工作项类型ID=5）:
-    closed(已关闭)      -> reopened(重新打开)
-    in-progress(处理中) -> closed(关闭), resolved(已解决)
-    open(待解决)        -> closed(关闭), in-progress(处理中), resolved(已解决)
-    reopened(重新打开)  -> closed(关闭), in-progress(处理中), resolved(已解决)
-    resolved(已解决)    -> closed(关闭), reopened(重新打开)
-
-  故事（工作项类型ID=2）:
-    developing(开发中)  -> open(转为待办), to-be-tested(开发完成)
-    open(待开发)        -> developing(开发中)
-    testing(测试中)     -> open(打回), verified(验证通过)
-    to-be-tested(待测试)-> open(打回), testing(测试中)
-    verified(验证通过)  -> open(重新打开), released(发布)
-
-  任务（工作项类型ID=3）:
-    done(完成)          -> in-progress(重新处理), to-do(重新打开)
-    in-progress(处理中) -> done(完成), to-do(转为待办)
-    to-do(待办)         -> done(完成), in-progress(开始处理)
-
-【注意】同一中文状态在不同类型下可能对应不同英文值（如"处理中"对 bug 是 in-progress，对故事是 developing）。变更状态时传入的 workitem_status 必须是目标类型的合法英文值。
-
-【示例】将一个 bug 从"待解决"变为"处理中"：change_workitem_status(workitem_id="xxx", workitem_status="in-progress")
+【使用流程】
+1. 变更前先调用 get_next_workitem_status_list(workitem_id) 获取该工作项当前状态下允许变更的目标状态列表；
+2. 按返回项的 toStatusName（中文转换名）选出符合意图的目标，把对应的 toStatus（英文状态值）传入本工具的 workitem_status 参数——不要传中文名，也不要凭空猜测状态值（转换规则由 DevOps 平台配置决定，不同项目/类型的状态集合可能不同）；
+3. 变更失败时（如状态不合法、或期间已被他人变更），重新调用 get_next_workitem_status_list 查询最新可变更状态后再重试。
 """)
 async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status: str) -> Dict[str, Any]:
     """变更工作项状态"""
     logger.info(f"开始变更工作项 {workitem_id} 的状态为 {workitem_status}")
     try:
         client = await get_client(ctx)
-        # 服务端校验：查询真实当前状态，检查转换是否合法
-        check = await client.validate_status_transition(workitem_id, workitem_status)
-        if not check["valid"]:
-            logger.warning(f"非法状态转换: 类型={check['workitem_type']}, 当前状态={check['current_status']}, 目标状态={workitem_status}, 允许={check['allowed_statuses']}")
-            return {
-                "error": f"非法状态转换：当前状态 {check['current_status']} 不允许变更为 {workitem_status}",
-                "workitem_type": check["workitem_type"],
-                "current_status": check["current_status"],
-                "allowed_statuses": check["allowed_statuses"],
-            }
         r = await client.change_workitem_status(workitem_id, workitem_status)
         logger.info("工作项状态变更成功")
         return r
