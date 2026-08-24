@@ -73,12 +73,12 @@ Expected: 无输出，退出码 0。
 
 ```bash
 uv run python main.py > /tmp/mcp-smoke.log 2>&1 &
-SERVER_PID=$!
 sleep 4
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/mcp
-taskkill //F //T //PID $SERVER_PID   # Windows 下 kill 只杀 uv.exe 包装进程，会留孤儿 python 占 8000
+WIN_PID=$(netstat -ano | grep ':8000.*LISTENING' | awk '{print $NF}' | head -1)
+[ -n "$WIN_PID" ] && taskkill //F //T //PID $WIN_PID   # MSYS $! 是 bash 内部 PID，须用 netstat 查真实 Windows PID 杀树
 ```
-Expected: curl 输出 4xx（405/406 之一——GET 打 streamable-http 端点的正常拒绝码）；`000` = 服务没起来，查 `/tmp/mcp-smoke.log`。若提示端口占用，检查上一次冒烟是否留下孤儿 python.exe。
+Expected: curl 输出 4xx（400/405/406 之一——裸 GET 打 streamable-http 端点的正常拒绝码）；`000` = 服务没起来，查 `/tmp/mcp-smoke.log`。若端口被占，先用同样的 netstat+taskkill 清掉上一次冒烟的孤儿 python.exe。
 （前提：本地 8000 端口空闲；被占用则先停掉占用进程。`.env` 已提供 `DEVOPS_BASE_URL`，启动不依赖后端可达。）
 
 - [ ] **Step 4: 提交**
