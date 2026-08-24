@@ -1,0 +1,12 @@
+# 真实凭据绝不进镜像（服务器侧配置走 docker run -e）
+.env
+.git
+.gitignore
+.venv
+.idea
+.claude
+__pycache__
+*.pyc
+docs
+CLAUDE.md
+*.tar
