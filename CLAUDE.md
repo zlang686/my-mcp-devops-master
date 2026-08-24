@@ -101,7 +101,9 @@ Everything else is per-request via MCP client HTTP headers (`X-DevOps-afcToken`,
 
 ## Transport
 
-Server runs with `transport="streamable-http"` at `127.0.0.1:8000`, path `/mcp` (see `main.py::main`; v2 moved host/port/path into `run()` — the path parameter is `streamable_http_path`, not v1's `mcp_path`). There is no CLI/stdio transport configured. v2 serves both 2025-era (handshake) and 2026-07-28 (stateless) client generations; request bodies are capped at 4 MiB (the attachment chunk tool already paginates). OpenTelemetry middleware is enabled by default.
+Server runs with `transport="streamable-http"` at `127.0.0.1:8000` (defaults; overridable via `MCP_HOST`/`MCP_PORT` env vars — Docker deployments must bind `0.0.0.0` or host port mapping can't reach the process), path `/mcp` (see `main.py::main`; v2 moved host/port/path into `run()` — the path parameter is `streamable_http_path`, not v1's `mcp_path`). There is no CLI/stdio transport configured. v2 serves both 2025-era (handshake) and 2026-07-28 (stateless) client generations; request bodies are capped at 4 MiB (the attachment chunk tool already paginates). OpenTelemetry middleware is enabled by default.
+
+**Docker deployment:** root `Dockerfile` (python:3.13-slim + pinned uv 0.11.14, deps layer split from source) + `.dockerignore` (`.env` never enters the image); `DEVOPS_BASE_URL` is injected at runtime via `docker run -e`, and the container sets `MCP_HOST=0.0.0.0` itself. Build/transfer/run runbook: `docs/superpowers/plans/2026-08-24-docker-deployment.md` (spec: `docs/superpowers/specs/2026-08-24-docker-deployment-design.md`).
 
 ## Known Gotchas
 
