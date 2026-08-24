@@ -38,11 +38,13 @@ port=int(os.getenv("MCP_PORT", "8000")),
 **`Dockerfile`**
 
 - 基础镜像 `python:3.13-slim`（项目 `requires-python >=3.13`）。
-- uv 采用官方推荐模式：`COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/`。
+- uv 采用官方推荐模式并**固定版本**：`COPY --from=ghcr.io/astral-sh/uv:0.11.14 /uv /uvx /usr/local/bin/`
+  （与本地生成 `uv.lock` 的 uv 同版，避免 latest 大版本漂移破坏 lock 兼容性）。
 - 分层：先只 COPY `pyproject.toml` + `uv.lock` 执行 `uv sync --frozen --no-dev`
   （依赖层缓存，源码改动不重装依赖），再 COPY 源码。
-- `ENV MCP_HOST=0.0.0.0`；`CMD ["python", "main.py"]`（用 `uv run` 直接跑 venv 内 python，
-  不在运行时二次解析依赖）。
+- `ENV PATH="/app/.venv/bin:$PATH"` 把 venv 前置；`ENV MCP_HOST=0.0.0.0`；
+  `CMD ["python", "main.py"]` —— 明确选 venv-PATH + 裸 `python`（而非 `uv run`，
+  后者启动时会二次解析环境），与"运行时不重装依赖"目标一致。
 - 端口声明 `EXPOSE 8000`（文档性质）。
 
 **`.dockerignore`**
@@ -72,11 +74,11 @@ docker run -d --name devops-mcp --restart unless-stopped \
 ```bash
 # ── 本地（Windows / Docker Desktop）──
 docker build -t devops-mcp:0.1.0 .
-docker save devops-mcp:0.1.0 | gzip > devops-mcp.tar.gz
+docker save -o devops-mcp.tar devops-mcp:0.1.0   # -o 写文件，Git Bash / PowerShell 通用
 
 # ── 传输 ──
-scp devops-mcp.tar.gz user@<服务器>:/opt/devops-mcp/
-ssh user@<服务器> "cd /opt/devops-mcp && gunzip -c devops-mcp.tar.gz | docker load"
+scp devops-mcp.tar user@<服务器>:/opt/devops-mcp/
+ssh user@<服务器> "docker load -i /opt/devops-mcp/devops-mcp.tar"
 
 # ── 服务器：启动 ──
 docker run -d --name devops-mcp --restart unless-stopped \
