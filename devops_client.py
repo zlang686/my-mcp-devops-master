@@ -304,7 +304,8 @@ class DevOpsClient:
             due_time: 截止日期，格式 YYYY-MM-DD，可选
 
         Returns:
-            工作项关键信息 dict（workitem_id、workitem_key、状态、负责人等）
+            最小确认 dict（9 字段）：workitem_id、workitem_key、title、workitem_type_name、
+            workitem_status、workitem_status_name、priority、assignee_emp_name、create_time
 
         Raises:
             ValueError: workitem_type 或 priority 非法时抛出
@@ -354,27 +355,12 @@ class DevOpsClient:
             "workitem_id": data.get("workitemId"),
             "workitem_key": data.get("workitemKey"),
             "title": data.get("title"),
-            "workitem_type_id": data.get("workitemTypeId"),
             "workitem_type_name": data.get("workitemTypeName"),
             "workitem_status": data.get("workitemStatus"),
             "workitem_status_name": data.get("workitemStatusName"),
             "priority": data.get("priority"),
-            "assignee": data.get("assignee"),
             "assignee_emp_name": data.get("assigneeEmpName"),
-            "project_id": data.get("projectId"),
-            "project_code": data.get("projectCode"),
-            "project_name": data.get("projectName"),
-            "parent_workitem_id": data.get("parentWorkitemId"),
-            "parent_workitem_key": data.get("parentWorkitemKey"),
-            "iteration_id": data.get("iterationId"),
-            "iteration_name": data.get("iterationName"),
-            "version_id": data.get("versionId"),
-            "version_name": data.get("versionName"),
-            "module_id": data.get("moduleId"),
-            "module_name": data.get("moduleName"),
             "create_time": data.get("createTime"),
-            "due_time": data.get("dueTime"),
-            "time_estimate": data.get("timeEstimate"),
         }
         return result
 
@@ -402,6 +388,27 @@ class DevOpsClient:
         r = await self.post(url,payload)
         return r.json()
 
+    async def update_workitem_description(self,workitem_id:str,description:str):
+        """修改工作项内容描述
+
+        Args:
+            workitem_id: 工作项id
+            description: 工作项内容描述，HTML 富文本格式；纯文本（无标签）自动包装为 <p> 段落
+
+        Returns:
+            最小确认 dict（4 字段）：workitem_id、workitem_key、title、update_time
+        """
+        payload={"workitem":{"workitemId":workitem_id,"description":to_rich_text(description)}}
+        url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
+        r = await self.post(url,payload)
+        data = r.json()
+        return {
+            "workitem_id": data.get("workitemId"),
+            "workitem_key": data.get("workitemKey"),
+            "title": data.get("title"),
+            "update_time": data.get("updateTime"),
+        }
+
     async def get_next_workitem_status_list(self,workitem_id:str):
         """查询工作项当前状态下允许变更的下一步状态列表（以平台配置为准，动态获取）
 
@@ -418,20 +425,27 @@ class DevOpsClient:
         return r.json()
 
     async def change_workitem_status(self,workitem_id:str,workitem_status:str):
-        """变更工作项状态an
+        """变更工作项状态
 
         Args:
             workitem_id: 工作项id
             workitem_status: 工作项状态，例如：open=待解决 ,in-progress=处理中,reopened=重新打开
 
         Returns:
-            工作项状态变更
-
+            最小确认 dict（5 字段）：workitem_id、workitem_key、workitem_status、
+            workitem_status_name、update_time
         """
         payload={"workitem":{"workitemId":workitem_id,"workitemStatus":workitem_status}}
         url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
         r = await self.put(url,payload)
-        return r.json()
+        data = r.json()
+        return {
+            "workitem_id": data.get("workitemId"),
+            "workitem_key": data.get("workitemKey"),
+            "workitem_status": data.get("workitemStatus"),
+            "workitem_status_name": data.get("workitemStatusName"),
+            "update_time": data.get("updateTime"),
+        }
 
     async def create_testcase_group(self, group_name: str, parent_group_id: Optional[str] = None) -> dict[str, Any]:
         """创建测试用例分组
