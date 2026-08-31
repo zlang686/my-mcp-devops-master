@@ -33,7 +33,7 @@ There is currently **no test suite, linter, or formatter configured**. Do not in
 # Syntax-check the whole server
 uv run python -m py_compile main.py server.py permissions.py config.py devops_client.py tools/workitems.py tools/attachments.py tools/testcases.py
 
-# Confirm tool registration (12 tools currently)
+# Confirm tool registration (14 tools currently)
 uv run python -c "import asyncio, tools, main; print(len(asyncio.run(main.mcp.list_tools())))"
 ```
 
@@ -46,11 +46,11 @@ main.py               → entry point: logging config, imports the tools package
 server.py             → shared MCPServer instance (v2), module-level credential-keyed
                        ClientRegistry (LRU) + get_client(ctx) facade reading ctx.headers;
                        registers the permission middleware (one mcp.middleware.append line)
-permissions.py        → TOOL_PERMISSIONS mapping (13 tools) + permission_middleware:
+permissions.py        → TOOL_PERMISSIONS mapping (15 tools: 14 registered + disabled get_attachment_resource) + permission_middleware:
                        fail-closed access control, unmapped tools allowed
 tools/
   __init__.py         → imports domain modules to trigger @mcp.tool registration
-  workitems.py        → work-item tools (list/create/details/comment/status-change)
+  workitems.py        → work-item tools (list/create/details/comment/status-change/description-edit/next-status-query)
   attachments.py      → attachment tools (preview/chunk/resource/image) + preview helpers
   testcases.py        → test-case tools (group & case create/query) + Step model helpers
 devops_client.py      → DevOps HTTP API wrapper; persistent httpx.AsyncClient + user info
@@ -110,7 +110,7 @@ Server runs with `transport="streamable-http"` at `127.0.0.1:8000` (defaults; ov
 - **Never return a bare list from a tool.** The SDK's `_convert_to_content` flattens lists into one TextContent block per element, and some clients/models only read the first block (this silently dropped all but the first item in practice). Wrap collections in a dict: `get_workitem_list` → `{"total","offset","limit","items"}`, `get_testcase_groups` → `{"total","groups"}`, `get_testcase_list` → `{"total","cases"}`. On failure these return `{"error": ...}` — never reintroduce `[{"error": ...}]`.
 - All tools pass `structured_output=False` to `@mcp.tool(...)`: no output schema is advertised, results (success/error) are plain JSON text — otherwise strict clients reject error-shaped results with `-32600` ("has an output schema but did not return structured content"). Exception: `get_attachment_image` returns the SDK's `Image` helper on success (annotation `Image | dict`) — `_convert_to_content` turns it into a single `ImageContent` block; its error branches still return `{"error": ...}` JSON text.
 - The SDK `Image` helper builds MIME as `image/{format}` **verbatim**, so `format="jpg"` yields the non-standard `image/jpg`. `MIME_MAP` in tools/attachments.py holds the correct mappings (`jpg` → `image/jpeg`); a previous implementation hand-constructed `mcp_types.ImageContent` specifically to control the MIME exactly.
-- `get_attachment_resource` is currently disabled (commented out in tools/attachments.py); its `TOOL_PERMISSIONS` entry is retained as dead config for re-enabling. Tool count is 12 registered vs 13 mapped.
+- `get_attachment_resource` is currently disabled (commented out in tools/attachments.py); its `TOOL_PERMISSIONS` entry is retained as dead config for re-enabling. Tool count is 14 registered vs 15 mapped (mapping includes the disabled get_attachment_resource; update_workitem_description mapped 2026-08-31).
 - Permission denials return `{"error": ..., "required_permission": ...}` as JSON text with `is_error=True` (`permissions.py::_deny`). The module/method docstrings in permissions.py still describe the older non-isError behavior — trust the code.
 - The v2 low-level `ServerMiddleware` API is officially **provisional** — it may change within 2.x. All touchpoints are confined to `permissions.py` plus one `mcp.middleware.append(...)` line in `server.py`; the dependency is pinned `<3`.
 - `X-DevOps-Project-ID` is a required header (the permissions API needs `projectId`); requests without it are rejected before any tool runs.
