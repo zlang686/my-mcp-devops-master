@@ -135,7 +135,7 @@ async def get_workitem_list(
   priority:      highest(最高) / high(高) / medium(中等) / low(低) / lowest(最低)
   man_hour:      评估工时，单位为小时（内部自动转换为秒）
 
-返回创建后的工作项关键信息（含 workitem_key、状态、负责人等）。""")
+返回最小确认信息（9 字段）：workitem_id、workitem_key、title、workitem_type_name、workitem_status、workitem_status_name、priority、assignee_emp_name、create_time；需要完整详情请调用 get_workitem_details。""")
 async def create_workitem(
     ctx: Context,
     title: str,
@@ -180,6 +180,31 @@ async def add_workitem_comment(ctx: Context, project_id: str, workitem_id: str, 
     except Exception as e:
         logger.error(f"添加评论失败: {str(e)}")
         return {"error": f"添加评论失败: {str(e)}"}
+
+@mcp.tool(structured_output=False, description="""修改指定工作项的内容描述。
+
+
+【description 富文本格式】
+  描述字段支持 HTML 富文本，请直接提供 HTML 片段（无需 <html>/<body> 外壳）。
+  支持标签：p(段落)、br(换行)、strong/b(加粗)、em/i(斜体)、u(下划线)、
+           ul/ol/li(列表)、h1-h6(标题)、blockquote(引用)、code/pre(代码)、a(链接)。
+  示例：<p>实现登录功能</p><ul><li>用户名密码登录</li><li>单点登录</li></ul>
+  注意：传入纯文本（无 HTML 标签）时将自动包装为 <p> 段落，换行符不渲染，请主动用 HTML 标签排版。
+
+【返回】最小确认信息（4 字段）：workitem_id、workitem_key、title、update_time。
+""")
+async def update_workitem_description(ctx: Context, workitem_id: str, description: str) -> Dict[str, Any]:
+    """修改工作项内容描述"""
+    logger.info(f"开始修改工作项 {workitem_id} 内容描述")
+    try:
+        client = await get_client(ctx)
+        data = await client.update_workitem_description(workitem_id, description)
+        logger.info("修改工作项内容描述成功")
+        return data
+    except Exception as e:
+        logger.error(f"修改工作项内容描述失败: {str(e)}")
+        return {"error": f"修改工作项内容描述失败: {str(e)}"}
+
 @mcp.tool(structured_output=False, description="""查询指定工作项在当前状态下允许变更的下一步状态列表（以 DevOps 平台配置为准，动态获取）。
 
 【返回结构】
@@ -230,6 +255,8 @@ async def get_next_workitem_status_list(ctx: Context,workitem_id:str) -> Dict[st
 1. 变更前先调用 get_next_workitem_status_list(workitem_id) 获取该工作项当前状态下允许变更的目标状态列表；
 2. 按返回项的 toStatusName（中文转换名）选出符合意图的目标，把对应的 toStatus（英文状态值）传入本工具的 workitem_status 参数——不要传中文名，也不要凭空猜测状态值（转换规则由 DevOps 平台配置决定，不同项目/类型的状态集合可能不同）；
 3. 变更失败时（如状态不合法、或期间已被他人变更），重新调用 get_next_workitem_status_list 查询最新可变更状态后再重试。
+
+【返回】变更成功返回最小确认信息（5 字段）：workitem_id、workitem_key、workitem_status、workitem_status_name、update_time（workitem_status 为变更后的新状态值）。
 """)
 async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status: str) -> Dict[str, Any]:
     """变更工作项状态"""
