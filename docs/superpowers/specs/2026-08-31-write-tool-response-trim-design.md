@@ -16,7 +16,7 @@
 
 1. **上下文成本**：MCP 工具结果全部进入 LLM 上下文，单次约 2.5~3K tokens，大半是噪声。
 2. **零信息增益回显**：`update_workitem_description` 把客户端刚发送的 description（可达数 KB HTML）原样回显。
-3. **违反项目惯例**：CLAUDE.md 明确 "only expose the fields a client needs — existing tools deliberately drop most raw fields"。`get_workitem_list` 精简到 15 字段、`get_workitem_details` 7 字段、`create_workitem` 已有 23 字段精简（`devops_client.py` create_workitem 的 result dict）。两个裸透传的写工具是例外。
+3. **违反项目惯例**：CLAUDE.md 明确 "only expose the fields a client needs — existing tools deliberately drop most raw fields"。`get_workitem_list` 每项精简到 18 字段、`get_workitem_details` 7 字段、`create_workitem` 已有 24 字段精简（`devops_client.py` create_workitem 的 result dict）。两个裸透传的写工具是例外。
 4. **职责重叠**：写操作应"确认结果"；看全量详情是读操作（`get_workitem_details` / `get_workitem_list`）的职责。
 
 用户已确认：**客户端不依赖写操作返回的完整详情，确认成功即可**。
@@ -41,13 +41,13 @@
 设计依据：
 
 - **键名沿用 snake_case**：与 `create_workitem` 已提交的精简形状一致；不趁机改 camelCase——那会重命名既有键，破坏面更大。
-- **create 保留最多**：新工作项对 agent 是全未知的，需要身份 + 初始状态。砍掉的 14 个字段（`iteration_id`/`version_id`/`module_id`/`project_*`/`parent_workitem_*`/`due_time`/`time_estimate`/`assignee`/`workitem_type_id` 等）要么由服务端 header 决定、要么是 agent 刚传入的回显，无信息增益。
+- **create 保留最多**：新工作项对 agent 是全未知的，需要身份 + 初始状态。砍掉的 15 个字段（`iteration_id`/`iteration_name`/`version_id`/`version_name`/`module_id`/`module_name`/`project_id`/`project_code`/`project_name`/`parent_workitem_id`/`parent_workitem_key`/`due_time`/`time_estimate`/`assignee`/`workitem_type_id`）要么由服务端 header 决定、要么是 agent 刚传入的回显，无信息增益。
 - **两个更新类工具都带 `workitem_key`**：agent 向用户汇报用人类可读标识（如 IPAAS-283），而非它自己传入的 `workitem_id`。
 - **`update_time`**：后端回显的 updateTime，是"写入已落地"的证据。
 
 字段映射（snake_case ← 后端 camelCase）：`workitem_id`←`workitemId`、`workitem_key`←`workitemKey`、`workitem_type_name`←`workitemTypeName`、`workitem_status`←`workitemStatus`、`workitem_status_name`←`workitemStatusName`、`assignee_emp_name`←`assigneeEmpName`、`create_time`←`createTime`、`update_time`←`updateTime`。
 
-**破坏性变更**：`create_workitem` 返回从 23 字段缩减为 9 字段（已提交行为的变化）。用户已确认无客户端依赖被砍字段。
+**破坏性变更**：`create_workitem` 返回从 24 字段缩减为 9 字段（已提交行为的变化）。用户已确认无客户端依赖被砍字段。
 
 ## 实现要点
 
@@ -60,7 +60,7 @@
 
 ### tools/workitems.py
 
-1. 三个工具的 `description` 各加一句返回字段说明（`update_workitem_description` 现有 description 完全未提返回形状）。
+1. `create_workitem` 的 description 末尾**已有**一句返回说明（"返回创建后的工作项关键信息（含 workitem_key、状态、负责人等）"）——**替换**该句以匹配新的 9 字段形状，避免两句并存。`update_workitem_description` 现有 description 完全未提返回形状，**新增**一句；`change_workitem_status` 同样**新增**。
 2. 修正 `update_workitem_description` 工具的复制错文案：函数 docstring"添加工作项评论"→"修改工作项内容描述"；except 分支日志与错误文案"添加评论失败"→同步修正。
 3. `change_workitem_status` 的 description 补充返回形状（新状态 + updateTime 确认变更生效）。
 
@@ -80,7 +80,7 @@ uv run python -m py_compile main.py server.py permissions.py config.py devops_cl
 uv run python -c "import asyncio, tools, main; print(len(asyncio.run(main.mcp.list_tools())))"
 ```
 
-真实后端冒烟（终验）：对测试工作项执行改描述 / 改状态，确认返回为精简形状且字段值正确（token 可从 `~/.claude.json` 的 mcpServers headers 取，注意会过期；或由用户在其 Electron 客户端实测）。
+真实后端冒烟（终验）：对测试工作项执行改描述 / 改状态，确认返回为精简形状且字段值正确；**顺带确认描述更新 POST 的响应里后端是否回显 `updateTime`**（状态变更 PUT 实测有回显）——若该端点不回显，`update_time` 为 `null`，可接受，但需在验证时知晓而非事后发现（token 可从 `~/.claude.json` 的 mcpServers headers 取，注意会过期；或由用户在其 Electron 客户端实测）。
 
 ## 明确不做
 
