@@ -88,3 +88,11 @@ uv run python -c "import asyncio, tools, main; print(len(asyncio.run(main.mcp.li
 - 不抽共享重塑 helper
 - 不动错误契约 / 权限 / 注册机制
 - 不处理 `add_workitem_comment` 的返回（评论接口返回的是评论对象而非完整工作项，不在本次范围；如需另行精简另开任务）
+
+## 实施补充（2026-08-31，真实后端冒烟发现）
+
+- **动词修正（fix）**：WIP 的 `update_workitem_description` 原用 POST 打 `/api/devops/pm/workitems/{id}`，真实后端返回 500 且错误体明示 `Request method 'POST' not supported`；同载荷改 PUT 后 200。根因：方法从 `change_workitem_status` 抄改时动词误写为 POST，且此前从未联调（用户先前贴的"全量响应"实例实为状态变更的响应）。已修复为 `self.put`。
+- **updateTime 回显确认**：描述更新 PUT 响应含 `updateTime`（冒烟实测有值），`update_time` 字段不为 null——前文"待冒烟确认"项落定。
+- **to_rich_text 生效验证**：纯文本描述提交后读回为 `<p>…</p>` 包装。
+- 冒烟三腿全过：create 9 字段 / update 4 字段 / change 5 字段；冒烟项已流转至"已关闭"清理。
+- 权限中间件：`update_workitem_description` 映射 `project_kanban_workitem_edit` 与同级写工具共用同一代码路径；冒烟为 client 层直调（未过 MCP 传输），中间件路径未单独端到端复测，由既有同级工具的线上使用背书。

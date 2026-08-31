@@ -400,7 +400,7 @@ class DevOpsClient:
         """
         payload={"workitem":{"workitemId":workitem_id,"description":to_rich_text(description)}}
         url = f"{self.base_url}/api/devops/pm/workitems/{workitem_id}"
-        r = await self.post(url,payload)
+        r = await self.put(url,payload)
         data = r.json()
         return {
             "workitem_id": data.get("workitemId"),
