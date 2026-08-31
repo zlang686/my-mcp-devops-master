@@ -31,6 +31,7 @@ TOOL_PERMISSIONS: dict[str, str] = {
     "add_workitem_comment": "project_kanban_workitem_edit",
     "get_next_workitem_status_list": "project_kanban_workitem_edit",
     "change_workitem_status": "project_kanban_workitem_edit",
+    "update_workitem_description": "project_kanban_workitem_edit",
     "get_workitem_details": "project_kanban_workitem_process",
     # 附件（跟随工作项详情权限）
     "get_attachment_preview": "project_kanban_workitem_process",
