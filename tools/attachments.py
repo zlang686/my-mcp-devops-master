@@ -144,6 +144,10 @@ async def get_attachment_chunk(ctx: Context, file_url: str, file_type: str, offs
 #     }
 
 
+# structured_output 必须为 False：返回注解含 SDK 的 Image 类（无 __get_pydantic_core_schema__），
+# 开 True 时 func_metadata 会为 `Image | dict` 建 pydantic 输出模型，注册即抛
+# PydanticSchemaGenerationError；且错误分支 {"error": ...} 无 structuredContent，
+# 严格客户端会以 -32600 拒收（见 CLAUDE.md Known Gotchas）。
 @mcp.tool(structured_output=False, description="下载图片类型附件并以图片内容返回，多模态客户端可直接查看。仅支持 png/jpg/jpeg/gif/webp 且不超过 5MB；file_url 与 file_type 取自 get_workitem_details 返回的 attachments 数组（fileUrl/fileType 字段）")
 async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> Image | dict:
     """下载图片附件，返回 Image 对象；失败返回 {"error": ...}"""
@@ -172,8 +176,8 @@ async def get_attachment_image(ctx: Context, file_url: str, file_type: str) -> I
         # mime = MIME_MAP.get(file_type.lower(), "application/octet-stream")
         # b64 = base64.b64encode(data).decode("ascii")
         logger.info(f"图片附件下载成功: {len(data)} 字节, type={file_type}")
-        # SDK _convert_to_content 对 ContentBlock 列表逐块透传（func_metadata.py:563-569），
-        # 配合 structured_output=False 直接产出 CallToolResult(content=[文本块, 图片块])
+        # SDK func_metadata._convert_to_content 对 Image 实例返回单个 ImageContent
+        # （func_metadata.py:557-558）；mime = image/{format}，jpg 已归一为 jpeg
         return Image(data=data, format=file_type)
     except Exception as e:
         logger.error(f"下载图片附件失败: {str(e)}")
