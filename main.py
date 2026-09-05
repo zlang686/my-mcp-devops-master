@@ -1,12 +1,12 @@
 """MCP 服务器入口：日志配置、导入工具包触发注册、启动服务。
 
-工具实现位于 tools/{workitems,attachments,testcases}.py，
+工具实现位于 tools/{workitems,attachments,testcases,projects}.py，
 MCPServer 实例与凭据注册表位于 server.py，工具权限中间件位于 permissions.py。
 """
 import logging
 import os
 
-import tools  # noqa: F401  导入即注册 13 个 @mcp.tool 工具
+import tools  # noqa: F401  导入即注册全部 @mcp.tool 工具（清单见 CLAUDE.md）
 from server import mcp
 
 # 配置日志（入口统一配置，各模块仅 getLogger）

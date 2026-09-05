@@ -4,6 +4,10 @@
 调用 GET /api/devops/uc/permissions/employees 拉取当前用户权限码列表，
 与 TOOL_PERMISSIONS 映射表比对，不匹配则拒绝执行。
 
+权限按"生效项目"校验：client 经 ClientRegistry.get 获取，会话内
+switch_project 切换后自动解析为目标项目的 client（见 session_context.py），
+权限码随之按目标项目拉取比对——不会出现按旧项目查权限、往新项目写入。
+
 策略（用户已确认）：
 - 权限码按凭据缓存一次（DevOpsClient.get_permissions 双检锁）；
 - 权限接口失败/返回形状异常 → fail-closed 拒绝；
@@ -24,6 +28,12 @@ from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 logger = logging.getLogger(__name__)
 
 # 工具名 → 所需权限码（DevOps 平台权限接口返回的权限码）
+#
+# 有意不映射的工具（未映射 = 放行）：
+# - list_projects / switch_project：权限码均为项目内业务权限，无对应码；
+#   前者只读且按 token 自限（只返回本人可访问项目）；后者自身 fail-closed
+#   （verify_token + get_permissions + 项目列表可达性三重校验，失败拒绝
+#   且不改变现状），且切换后的业务调用仍经本中间件按目标项目校验。
 TOOL_PERMISSIONS: dict[str, str] = {
     # 工作项看板
     "get_workitem_list": "project_kanban_workitem_create",

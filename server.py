@@ -9,6 +9,11 @@ mcp v2 的 lifespan 是全局的（startup 进入一次，不再按会话），
 （连接数/后端并发与用户数解耦），按凭据 5 元组只缓存轻量状态
 （配置、已验证的用户信息、权限码），LRU 仅限内存占用。
 base_url 由服务端 DEVOPS_BASE_URL 固定（config.py），客户端不再指定。
+
+会话级项目切换（switch_project 工具，tools/projects.py）：覆盖状态存于
+session_context.sessions（mcp-session-id 键控的有界 LRU），ClientRegistry.get
+单点解析——命中覆盖则用目标项目的 4 元组字段替换凭据 kwargs（afc_token /
+base_url 永不被覆盖），未切换或会话结束/重连时自动回落 header 模式。
 """
 import asyncio
 import logging
@@ -21,6 +26,7 @@ from mcp.server.mcpserver import Context, MCPServer
 
 from devops_client import MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, DevOpsClient
 from config import Config
+from session_context import SessionContext, sessions
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +77,25 @@ class ClientRegistry:
             self._http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
         return self._http
 
-    async def get(self, headers: Mapping[str, str]) -> DevOpsClient:
+    async def get(
+        self, headers: Mapping[str, str], override: Optional[SessionContext] = None
+    ) -> DevOpsClient:
         """按 headers 中的凭据获取（必要时构造并验证）DevOpsClient。
 
         base_url 恒取服务端配置；客户端残留的 X-DevOps-Base-URL 若与
         服务端配置不一致则拒绝（防止"以为连测试环境、实际写生产"）。
+
+        会话级项目覆盖（switch_project 工具）在本方法单点解析：不显式传
+        override 时自动按 headers 里的 mcp-session-id 查会话覆盖
+        （session_context.sessions），命中则整体替换凭据 kwargs 的 4 个
+        项目字段。权限中间件与工具层都经由本方法取 client → 权限校验
+        天然按"生效项目"执行。安全边界：覆盖只碰 project/iteration/
+        module/version，afc_token 与 base_url 永不可被覆盖；必填 header
+        校验在覆盖之前完成，X-DevOps-Project-ID 仍是必填基线。
+
+        Args:
+            override: 显式覆盖（switch_project 试构造目标项目时使用），
+                完全取代该会话的旧覆盖值（非叠加），且跳过自动解析。
 
         Raises:
             ValueError: 缺少必填 header（X-DevOps-afcToken / X-DevOps-Project-ID），
@@ -104,6 +124,24 @@ class ClientRegistry:
             kwargs[field] = value
         for field, (lookup, _) in _OPTIONAL_HEADERS.items():
             kwargs[field] = normalized.get(lookup, "")
+
+        # 会话级项目覆盖（单点解析）：未显式指定时按 mcp-session-id 查
+        # 会话覆盖；命中则整体替换 4 个项目字段（进入下方 5 元组 key，
+        # 目标项目自然获得独立 client 实例与独立权限缓存）。
+        # 必填/一致性校验已在上方完成——header 仍是必填基线，覆盖不是
+        # header 的替代品；afc_token / base_url 永不被覆盖。
+        if override is None:
+            override = sessions.resolve(headers)
+        if override is not None:
+            kwargs["project_id"] = override.project_id
+            kwargs["iteration_id"] = override.iteration_id
+            kwargs["module_id"] = override.module_id
+            kwargs["version_id"] = override.version_id
+            logger.debug(
+                f"会话覆盖生效: project={override.project_id}, "
+                f"iteration={override.iteration_id!r}, module={override.module_id!r}, "
+                f"version={override.version_id!r}"
+            )
 
         key = (
             kwargs["afc_token"], kwargs["project_id"],
@@ -156,6 +194,8 @@ async def get_client(ctx: Context) -> DevOpsClient:
 
     读取请求 HTTP headers 中的 DevOps 配置，经全局 ClientRegistry
     按凭据复用已验证的客户端（含已校验的 afc_token 与用户信息）。
+    含会话级项目覆盖解析：当前会话若已 switch_project，返回目标项目的
+    客户端（解析收敛在 ClientRegistry.get，见 session_context.py）。
     """
     headers = ctx.headers
     if headers is None:
@@ -170,6 +210,7 @@ async def _shutdown_lifespan(app: MCPServer):
         yield {}
     finally:
         await _registry.aclose_all()
+        sessions.clear_all()
 
 
 # 初始化 MCP 服务器（mcp v2：MCPServer 取代 FastMCP）

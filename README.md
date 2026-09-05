@@ -6,7 +6,14 @@
 - 技术栈：Python 3.13 + [uv](https://docs.astral.sh/uv/) + `mcp[cli]` v2 + httpx + pydantic
 - 设计文档：`docs/superpowers/specs/`，实施计划：`docs/superpowers/plans/`
 
-## 工具清单（14 个）
+## 工具清单（16 个）
+
+### 项目 / 会话（tools/projects.py）
+
+| 工具 | 说明 |
+|---|---|
+| `list_projects` | 查询当前登录用户可访问的全部项目（含开发/维护标记与当前生效项目） |
+| `switch_project` | 会话内切换默认项目（先 `list_projects` 取 ID；可选携带迭代/模块/版本上下文；传空重置回 header 默认） |
 
 ### 工作项（tools/workitems.py）
 
@@ -73,6 +80,16 @@ claude mcp add --transport http devops http://127.0.0.1:8000/mcp \
   --header "X-DevOps-Project-ID: <项目ID>"
 ```
 
+### 会话内动态切换项目
+
+`X-DevOps-Project-ID` 配置的是**默认项目**；一个代码库对应多个 DevOps 项目时（如开发项目 + 维护项目），无需改配置重连——在会话里说"切换到 ESB 维护项目"即可：
+
+1. `list_projects` 返回可访问项目列表（含开发/维护类型与当前生效项目）；
+2. `switch_project(project_id)` 完成切换，之后本会话的查询/创建默认作用于目标项目；
+3. 客户端重连或新会话自动恢复 header 默认项目，需要时重新切换。
+
+切换只影响当前会话（按 `mcp-session-id` 键控），权限校验始终按生效项目执行；切换前服务端会校验目标项目可达性与权限，失败则拒绝且不改变现状。
+
 ## 权限模型
 
 每个工具调用先经过权限中间件（fail-closed）：
@@ -99,10 +116,12 @@ docker run -d --name devops-mcp \
 ```
 main.py            入口：日志配置、导入 tools 包、mcp.run()
 server.py          共享 MCPServer 实例 + ClientRegistry（凭据键控 LRU 缓存，
-                   全进程共享一个 httpx 连接池与并发闸门）+ get_client(ctx) 门面
+                   全进程共享一个 httpx 连接池与并发闸门）+ get_client(ctx) 门面；
+                   ClientRegistry.get 同时是会话级项目覆盖的唯一解析点
+session_context.py 会话级项目切换状态（mcp-session-id → 覆盖上下文，有界 LRU）
 permissions.py     TOOL_PERMISSIONS 映射 + fail-closed 权限中间件
 devops_client.py   DevOps HTTP API 封装（认证、权限缓存、类型/优先级/工时换算）
-tools/             工具适配层：workitems / attachments / testcases，import 即注册
+tools/             工具适配层：workitems / attachments / testcases / projects，import 即注册
 config.py          Config 数据类，从 .env / 进程环境加载 DEVOPS_BASE_URL
 ```
 
@@ -113,6 +132,7 @@ config.py          Config 数据类，从 .env / 进程环境加载 DEVOPS_BASE_
 - **`get_attachment_image` 的 `structured_output` 必须为 `False`**：返回注解含 SDK 的 `Image` 类（无 pydantic schema），开 `True` 注册即抛 `PydanticSchemaGenerationError`；且错误分支无 structuredContent 会被严格客户端以 -32600 拒收。
 - **工具不得返回裸 list**：SDK 会把 list 拍平成多个 TextContent 块，部分客户端只读首块（实测丢过数据）。列表工具一律包成 `{"total", ..., "items"/"groups"/"cases"}` dict。
 - 工具层错误是正常（非 isError）结果；只有权限中间件拒绝才置 `is_error=true`。
+- **会话项目切换是会话级的**：客户端重连/新会话后自动回落 `X-DevOps-Project-ID` 默认项目（需重新切换）；无会话 ID 的客户端（stateless / stdio）不支持切换；按工作项 ID 直接操作的工具（如 `add_workitem_comment`）仍需传所属项目的 project_id 参数。
 - 状态流转词表按类型区分（如「处理中」：bug/task/risk 为 `in-progress`，story 为 `developing`）；流转列表以后端动态接口为准，勿在前端硬编码。
 - **部署环境若开着系统代理**（Windows 注册表代理 / 环境变量代理）：httpx 默认 `trust_env=True` 会把内网请求发给本地代理导致 502。内网部署建议给服务进程设 `NO_PROXY` 或改为直连。
 - 附件 `fileUrl` 为后端文件仓库直链（Nexus）；`get_attachment_image` 的 `file_url`/`file_type` 取自 `get_workitem_details` 返回的 `attachments` 数组。

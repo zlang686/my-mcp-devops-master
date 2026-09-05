@@ -31,10 +31,10 @@ There is currently **no test suite, linter, or formatter configured**. Do not in
 
 ```bash
 # Syntax-check the whole server
-uv run python -m py_compile main.py server.py permissions.py config.py devops_client.py tools/workitems.py tools/attachments.py tools/testcases.py
+uv run python -m py_compile main.py server.py permissions.py session_context.py config.py devops_client.py tools/workitems.py tools/attachments.py tools/testcases.py tools/projects.py
 
-# Confirm tool registration (14 tools currently)
-uv run python -c "import asyncio, tools, main; print(len(asyncio.run(main.mcp.list_tools())))"
+# Confirm tool registration (16 tools currently)
+uv run python -c "import asyncio, tools, main; ts = asyncio.run(main.mcp.list_tools()); print(len(ts), [t.name for t in ts])"
 ```
 
 ## Architecture
@@ -45,17 +45,25 @@ Layered structure with strict separation between MCP layer and HTTP layer:
 main.py               → entry point: logging config, imports the tools package, mcp.run()
 server.py             → shared MCPServer instance (v2), module-level credential-keyed
                        ClientRegistry (LRU) + get_client(ctx) facade reading ctx.headers;
-                       registers the permission middleware (one mcp.middleware.append line)
-permissions.py        → TOOL_PERMISSIONS mapping (15 tools: 14 registered + disabled get_attachment_resource) + permission_middleware:
+                       registers the permission middleware (one mcp.middleware.append line).
+                       ClientRegistry.get is the SINGLE resolution point for session-level
+                       project overrides (auto-resolves mcp-session-id → session_context.sessions)
+session_context.py    → session-scoped project-switch state: mcp-session-id → SessionContext
+                       (project/iteration/module/version) in a bounded LRU (256, aligned with
+                       ClientRegistry); written by switch_project, resolved inside
+                       ClientRegistry.get; session end = silent fallback to header mode
+permissions.py        → TOOL_PERMISSIONS mapping (15 mapped tools: 14 legacy + disabled get_attachment_resource;
+                       list_projects/switch_project deliberately unmapped) + permission_middleware:
                        fail-closed access control, unmapped tools allowed
 tools/
   __init__.py         → imports domain modules to trigger @mcp.tool registration
   workitems.py        → work-item tools (list/create/details/comment/status-change/description-edit/next-status-query)
   attachments.py      → attachment tools (preview/chunk/resource/image) + preview helpers
   testcases.py        → test-case tools (group & case create/query) + Step model helpers
+  projects.py         → list_projects / switch_project (session-level default-project switching)
 devops_client.py      → DevOps HTTP API wrapper; persistent httpx.AsyncClient + user info
                        + permission cache (get_permissions, double-checked lock) +
-                       STATUS_TRANSITIONS state machine for status-change validation
+                       get_project (per-user project list, consumed by list_projects)
 config.py             → Config dataclass; loads server-side DEVOPS_BASE_URL from .env /
                        process env (required; missing → ValueError at import, process
                        refuses to start — fail-fast)
@@ -81,13 +89,15 @@ IDs: `2`=故事/user-story, `3`=任务/task, `4`=bug, `5`=风险/risk.
 
 **Rich-text fields:** `devops_client.to_rich_text` normalizes HTML-ish fields (work-item `description`, test-case `note`/`precondition`): empty → `""`, anything that starts and ends with angle brackets passes through untouched, plain text gets wrapped in `<p>`.
 
-**Authentication:** the MCP client injects credentials via HTTP headers (`X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). The backend address is **server-side**: `DEVOPS_BASE_URL` env var (loaded by `config.py::Config.from_env` — `.env` for local dev, process env for deployment; one instance serves one backend). A client-sent legacy `X-DevOps-Base-URL` differing from the server config is rejected by `ClientRegistry.get` (prevents stale client configs silently writing to the wrong backend); matching or absent values pass. v2's lifespan is global (entered once at startup), so per-session clients were replaced by `ClientRegistry` in `server.py`, which separates transport from state: **one shared `httpx.AsyncClient` pool and one global `Semaphore`** serve all users (auth is per-request headers, so connections are credential-agnostic — backend concurrency stays ≤ `MAX_CONCURRENT_REQUESTS` no matter how many users), while the 5-tuple of credential header values keys a lightweight state cache (`UserInfo` + permission codes, a few KB each; LRU maxsize 256, eviction just drops the entry). `verify_token()` (`GET /api/devops/uc/users/current-user`) caches a `UserInfo` that client methods read via `self._user_info`. Header lookups lowercase the incoming mapping first, so plain dicts with mixed-case keys also work. A global shutdown lifespan closes the shared pool.
+**Authentication:** the MCP client injects credentials via HTTP headers (`X-DevOps-afcToken`, `X-DevOps-Project-ID` required; `X-DevOps-{Iteration,Module,Version}-ID` optional). The backend address is **server-side**: `DEVOPS_BASE_URL` env var (loaded by `config.py::Config.from_env` — `.env` for local dev, process env for deployment; one instance serves one backend). A client-sent legacy `X-DevOps-Base-URL` differing from the server config is rejected by `ClientRegistry.get` (prevents stale client configs silently writing to the wrong backend); matching or absent values pass. v2's lifespan is global (entered once at startup), so per-session clients were replaced by `ClientRegistry` in `server.py`, which separates transport from state: **one shared `httpx.AsyncClient` pool and one global `Semaphore`** serve all users (auth is per-request headers, so connections are credential-agnostic — backend concurrency stays ≤ `MAX_CONCURRENT_REQUESTS` no matter how many users), while the 5-tuple of credential header values keys a lightweight state cache (`UserInfo` + permission codes, a few KB each; LRU maxsize 256, eviction just drops the entry). `verify_token()` (`GET /api/devops/uc/users/current-user`) caches a `UserInfo` that client methods read via `self._user_info`. Header lookups lowercase the incoming mapping first, so plain dicts with mixed-case keys also work. A global shutdown lifespan closes the shared pool (and clears session overrides).
+
+**Session-level project switching:** one codebase may map to several DevOps projects (dev + maintenance). `switch_project` (tools/projects.py) stores a `SessionContext` override keyed by the `mcp-session-id` HTTP header in `session_context.sessions`; `ClientRegistry.get` is the single resolution point — when the session has an override, the 4 project fields (project/iteration/module/version) replace the header-derived kwargs before the 5-tuple key is built, so the target project gets its own client instance and permission cache. `afc_token` / `base_url` are never overridable. Back-compat: no switch = byte-identical header mode; session end / reconnect / LRU eviction = silent fallback to header mode (logged). Stateless (2026-07-28) and stdio clients carry no session id → `switch_project` refuses with a clear error, header mode unaffected. Permission checks always run against the effective project because the middleware fetches its client through the same `ClientRegistry.get`. `list_projects` exposes the per-user project list (`get_project()` → `GET /api/devops/pm/projects/actions/querybyuser`, paginated `{"data": [...]}` with string `projectId`, `projectType` D=开发/M=维护).
 
 ## Adding a New MCP Tool
 
 1. Add the underlying HTTP method to `DevOpsClient` in `devops_client.py`. Follow the existing pattern: build the URL from `self.base_url`, call `self.get/post/put`, and `return r.json()` (or the parsed shape). Methods may read `self._user_info` — it is populated by `verify_token()` during session construction.
 2. Add an `@mcp.tool(structured_output=False, ...)` adapter in the matching domain module under `tools/` (for a new domain, create the module and import it in `tools/__init__.py`). Use a concise `description=` (this is what the LLM sees). Wrap the body in try/except and return `{"error": ...}` on failure.
-3. When reshaping API responses, only expose the fields a client needs — existing tools deliberately drop most raw fields. Also add the tool → permission-code entry to `TOOL_PERMISSIONS` in `permissions.py` (unmapped tools are allowed by default; map new tools deliberately).
+3. When reshaping API responses, only expose the fields a client needs — existing tools deliberately drop most raw fields. Also decide the tool's `TOOL_PERMISSIONS` entry in `permissions.py` **explicitly** (unmapped tools are allowed by default — see `list_projects`/`switch_project` for a documented deliberate non-mapping; map new business tools deliberately).
 
 ## Configuration & Environment
 
@@ -110,13 +120,14 @@ Server runs with `transport="streamable-http"` at `127.0.0.1:8000` (defaults; ov
 - **Never return a bare list from a tool.** The SDK's `_convert_to_content` flattens lists into one TextContent block per element, and some clients/models only read the first block (this silently dropped all but the first item in practice). Wrap collections in a dict: `get_workitem_list` → `{"total","offset","limit","items"}`, `get_testcase_groups` → `{"total","groups"}`, `get_testcase_list` → `{"total","cases"}`. On failure these return `{"error": ...}` — never reintroduce `[{"error": ...}]`.
 - All tools pass `structured_output=False` to `@mcp.tool(...)`: no output schema is advertised, results (success/error) are plain JSON text — otherwise strict clients reject error-shaped results with `-32600` ("has an output schema but did not return structured content"). Exception: `get_attachment_image` returns the SDK's `Image` helper on success (annotation `Image | dict`) — `_convert_to_content` turns it into a single `ImageContent` block; its error branches still return `{"error": ...}` JSON text.
 - The SDK `Image` helper builds MIME as `image/{format}` **verbatim**, so `format="jpg"` yields the non-standard `image/jpg`. `MIME_MAP` in tools/attachments.py holds the correct mappings (`jpg` → `image/jpeg`); a previous implementation hand-constructed `mcp_types.ImageContent` specifically to control the MIME exactly.
-- `get_attachment_resource` is currently disabled (commented out in tools/attachments.py); its `TOOL_PERMISSIONS` entry is retained as dead config for re-enabling. Tool count is 14 registered vs 15 mapped (mapping includes the disabled get_attachment_resource; update_workitem_description mapped 2026-08-31).
+- `get_attachment_resource` is currently disabled (commented out in tools/attachments.py); its `TOOL_PERMISSIONS` entry is retained as dead config for re-enabling. Tool count is 16 registered vs 15 mapped (mapping includes the disabled get_attachment_resource; update_workitem_description mapped 2026-08-31; `list_projects`/`switch_project` are deliberately unmapped — see the comment above TOOL_PERMISSIONS).
 - Permission denials return `{"error": ..., "required_permission": ...}` as JSON text with `is_error=True` (`permissions.py::_deny`). The module/method docstrings in permissions.py still describe the older non-isError behavior — trust the code.
 - The v2 low-level `ServerMiddleware` API is officially **provisional** — it may change within 2.x. All touchpoints are confined to `permissions.py` plus one `mcp.middleware.append(...)` line in `server.py`; the dependency is pinned `<3`.
 - `X-DevOps-Project-ID` is a required header (the permissions API needs `projectId`); requests without it are rejected before any tool runs.
 - Header lookups lowercase the mapping first (HTTP headers arrive lowercase via Starlette); registry keys therefore match regardless of the incoming casing.
-- All 13 tools pass `structured_output=False` to `@mcp.tool(...)`: no output schema is advertised, results (success/error/denial) are plain JSON text — otherwise strict clients reject error-shaped results with `-32600` ("has an output schema but did not return structured content"). Exception: `get_attachment_image` returns `[TextContent(metadata JSON), ImageContent(base64)]` on success (SDK's `_convert_to_content` passes ContentBlock lists through unchanged); its error branches still follow the `{"error": ...}` JSON-text contract.
+- All 16 tools pass `structured_output=False` to `@mcp.tool(...)`: no output schema is advertised, results (success/error/denial) are plain JSON text — otherwise strict clients reject error-shaped results with `-32600` ("has an output schema but did not return structured content"). Exception: `get_attachment_image` returns `[TextContent(metadata JSON), ImageContent(base64)]` on success (SDK's `_convert_to_content` passes ContentBlock lists through unchanged); its error branches still follow the `{"error": ...}` JSON-text contract.
 - List-returning tools serialize as **one TextContent block per element** (SDK's `_convert_to_content` flattens lists — same as v1), not a single JSON-array block.
-- `client.get_project()` exists in `devops_client.py` but no MCP tool exposes it.
+- `client.get_project()` in `devops_client.py` is exposed via the `list_projects` tool (added 2026-09-05); it returns a paginated dict `{"data": [...], "total", ...}` with string `projectId` and `projectType` D/M.
+- Session project switching gotchas: reconnect/new session silently falls back to the header project (the model can simply re-switch; `switch_project`'s return note warns about this); a switch concurrent with other calls in the *same* session has a narrow TOCTOU window between middleware's permission check and the handler's effective project (Claude Code usage is sequential — unaffected); LRU eviction (>256 switched sessions) falls back with a WARNING log; stateless/stdio clients cannot switch at all.
 - Tool registration happens at import time: a new `tools/` domain module must be imported in `tools/__init__.py`, otherwise its tools never register.
 - A client-sent legacy `X-DevOps-Base-URL` is consistency-checked in `ClientRegistry.get`: mismatch with server `DEVOPS_BASE_URL` → `ValueError` surfaced as the standard denial/error JSON (prevents stale client configs silently hitting the wrong backend); matching or absent passes.
