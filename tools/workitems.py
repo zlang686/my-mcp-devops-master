@@ -165,6 +165,8 @@ async def create_workitem(
         return {"error": f"创建工作项失败: {str(e)}"}
 
 @mcp.tool(structured_output=False, description="""为指定工作项添加评论，需要提供项目ID、工作项ID和评论内容。
+【project_id 取值】
+传该工作项所属项目的ID；不确定当前生效项目时，先用 list_projects 查看 is_current=true 的项目（会话内 switch_project 切换后以切换后的项目为准）。
 【comment text文本格式】
 评论内容字段仅支持text纯文本格式
 """)
@@ -257,6 +259,8 @@ async def get_next_workitem_status_list(ctx: Context,workitem_id:str) -> Dict[st
 3. 变更失败时（如状态不合法、或期间已被他人变更），重新调用 get_next_workitem_status_list 查询最新可变更状态后再重试。
 
 【返回】变更成功返回最小确认信息（5 字段）：workitem_id、workitem_key、workitem_status、workitem_status_name、update_time（workitem_status 为变更后的新状态值）。
+
+【注意】本工具只变更单个工作项的状态；切换当前会话的默认项目请用 switch_project。
 """)
 async def change_workitem_status(ctx: Context, workitem_id: str, workitem_status: str) -> Dict[str, Any]:
     """变更工作项状态"""
